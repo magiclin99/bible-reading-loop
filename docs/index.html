@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#f5f0e6">
+<title>一年讀經一遍</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── Reader ─────────────────────────────────────────────── -->
+<header id="bar">
+  <button id="btn-browse" class="icon-btn" aria-label="瀏覽全部日程">☰</button>
+  <div id="bar-center">
+    <div id="bar-day"></div>
+    <div id="bar-ref"></div>
+  </div>
+  <button id="btn-track" class="track-toggle" aria-label="切換新舊約"></button>
+</header>
+
+<main id="reader">
+  <div id="pager">
+    <article id="page"></article>
+  </div>
+</main>
+
+<footer id="foot">
+  <button id="btn-prev" class="nav-btn" aria-label="前一天">‹ 前一天</button>
+  <button id="btn-read" class="read-btn" aria-label="標記讀完"></button>
+  <button id="btn-next" class="nav-btn" aria-label="下一天">下一天 ›</button>
+</footer>
+
+<!-- ── Browse overlay ─────────────────────────────────────── -->
+<div id="browse" class="overlay" hidden>
+  <div class="overlay-bar">
+    <strong>全部日程</strong>
+    <div class="overlay-actions">
+      <button id="browse-track" class="chip"></button>
+      <button id="btn-close" class="icon-btn" aria-label="關閉">✕</button>
+    </div>
+  </div>
+  <p class="overlay-hint">點卡片閱讀該天，或按「設為第一天」把它當作你的第 1 天（讀滿 364 天繞一圈）。</p>
+  <div id="browse-list"></div>
+</div>
+
+<!-- ── Toast ──────────────────────────────────────────────── -->
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
