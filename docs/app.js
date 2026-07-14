@@ -32,6 +32,24 @@ const prevOrig  = (orig) => ((orig - 2 + TOTAL) % TOTAL) + 1;
 const readKey   = (orig, track) => `${orig}-${track}`;
 const isRead    = (orig, track) => read.has(readKey(orig, track));
 
+// ── Progress (accumulation, not dates) ───────────────────────
+// Total readable portions of a track, and how many are marked read.
+const trackTotal = (track) => index.days.filter(d => d[track]).length;
+const trackRead  = (track) => index.days.filter(d => d[track] && isRead(d.day, track)).length;
+
+// Where the current day sits inside its Bible book, and how much of that
+// book is already read — a near-term milestone, gentler than the 364 total.
+function bookProgress(orig, track) {
+  const book = index.days[orig - 1][track].book;
+  const days = index.days.filter(d => d[track] && d[track].book === book).map(d => d.day);
+  return {
+    book,
+    pos:   days.indexOf(orig) + 1,
+    total: days.length,
+    readN: days.filter(o => isRead(o, track)).length,
+  };
+}
+
 // ── Data loading ─────────────────────────────────────────────
 async function loadIndex() {
   const r = await fetch('data/index.json');
@@ -64,9 +82,10 @@ async function render(slideDir) {
   state.currentTrack = track;
   const t = day[track];
 
-  // top bar
-  el('bar-day').textContent = `第 ${userDayOf(orig)} 天 · ${day.date}`;
+  // top bar (no date — progress, not schedule)
+  el('bar-day').textContent = `第 ${userDayOf(orig)} 天`;
   el('bar-ref').textContent = t ? t.ref : '（無內容）';
+  updateProgress(track);
   const other = track === 'nt' ? 'ot' : 'nt';
   const tk = el('btn-track');
   tk.className = `track-toggle ${track}`;
@@ -91,6 +110,14 @@ async function render(slideDir) {
   prefetch(orig);
 }
 
+// overall accumulation strip under the top bar
+function updateProgress(track) {
+  const fill = el('progress-fill');
+  const total = trackTotal(track), done = trackRead(track);
+  fill.className = track;
+  fill.style.width = total ? (done / total * 100) + '%' : '0';
+}
+
 // choose which track to show: honor stored track if it exists this day
 function pickTrack(day) {
   if (day[state.currentTrack]) return state.currentTrack;
@@ -105,7 +132,16 @@ function buildDayHTML(day, track) {
   // a day spans more than one book (so the two books can be told apart).
   const multiBook = new Set(t.verses.map(v => v.book)).size > 1;
 
-  let h = '';
+  // In-page header: book progress (near milestone) + running total (accumulation)
+  const bp = bookProgress(day.day, track);
+  const total = trackTotal(track), done = trackRead(track);
+  const bookPct = bp.total ? Math.round(bp.readN / bp.total * 100) : 0;
+  const trackName = track === 'nt' ? '新約' : '舊約';
+  let h = `<div class="day-head">
+      <div class="dh-title">${escapeHTML(bp.book)}</div>
+      <div class="dh-bookbar ${track}"><span style="width:${bookPct}%"></span></div>
+      <div class="dh-sub">本卷 第 ${bp.pos} / ${bp.total} 天　·　${trackName}累積 ${done} / ${total}</div>
+    </div>`;
   let curCh = null, curBook = null;
   for (const vs of t.verses) {
     if (vs.book !== curBook) {           // book change within a day (cross-book)
@@ -167,10 +203,16 @@ function toggleTrack() {
 }
 
 function toggleRead() {
-  const k = readKey(state.currentDay, state.currentTrack);
-  const label = state.currentTrack === 'nt' ? '新約' : '舊約';
+  const orig = state.currentDay, track = state.currentTrack;
+  const k = readKey(orig, track);
+  const label = track === 'nt' ? '新約' : '舊約';
   if (read.has(k)) { read.delete(k); toast(`已取消：${label}`); }
-  else { read.add(k); toast(`✓ 標記${label}讀完`); }
+  else {
+    read.add(k);
+    const bp = bookProgress(orig, track);            // readN now includes this day
+    if (bp.readN === bp.total) toast(`🎉 ${bp.book} 讀完了！`);
+    else toast(`✓ 標記${label}讀完`);
+  }
   saveRead();
   render();
 }
@@ -232,6 +274,11 @@ function closeBrowse() { el('browse').hidden = true; }
 
 function renderBrowse() {
   el('browse-track').textContent = browseTrack === 'nt' ? '看新約' : '看舊約';
+  const total = trackTotal(browseTrack), done = trackRead(browseTrack);
+  const pct = total ? Math.round(done / total * 100) : 0;
+  el('browse-progress').innerHTML =
+    `<div class="bp-bar ${browseTrack}"><span style="width:${pct}%"></span></div>` +
+    `<div class="bp-txt">${browseTrack === 'nt' ? '新約' : '舊約'} 已讀 ${done} / ${total}（${pct}%）</div>`;
   const list = el('browse-list');
   // ordered by the user's day numbering (their day 1..TOTAL)
   let html = '';
@@ -245,7 +292,7 @@ function renderBrowse() {
     const isStart = orig === state.startDay;
     html += `<div class="card${isCur ? ' is-current' : ''}${isStart ? ' is-start' : ''}">
       <div class="card-main" data-orig="${orig}">
-        <div class="card-day">第 ${u} 天 · ${info.date}${isCur ? ' · <span class="cur-tag">閱讀中</span>' : ''}${isStart ? ' · <span class="cur-tag">你的第1天</span>' : ''}</div>
+        <div class="card-day">第 ${u} 天${isCur ? ' · <span class="cur-tag">閱讀中</span>' : ''}${isStart ? ' · <span class="cur-tag">你的第1天</span>' : ''}</div>
         <div class="card-ref">${tk.ref}<span class="rmark ${done ? 'read' : 'unread'}">${done ? '✓ 已讀' : '未讀'}</span></div>
       </div>
       <button class="card-set" data-set="${orig}">設為第一天</button>

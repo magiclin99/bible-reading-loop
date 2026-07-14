@@ -68,6 +68,15 @@ body { display: flex; flex-direction: column; height: 100dvh; }
 .track-toggle.nt { color: var(--nt); }
 .track-toggle.ot { color: var(--ot); }
 
+/* ── Overall progress strip (accumulation) ───────────── */
+#progress { flex: 0 0 auto; height: 4px; background: var(--line); }
+#progress-fill {
+  height: 100%; width: 0; background: var(--accent);
+  transition: width .4s cubic-bezier(.4,0,.2,1);
+}
+#progress-fill.nt { background: var(--nt); }
+#progress-fill.ot { background: var(--ot); }
+
 /* ── Reader ──────────────────────────────────────────── */
 #reader { flex: 1 1 auto; position: relative; overflow: hidden; }
 #pager { height: 100%; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
@@ -80,9 +89,21 @@ body { display: flex; flex-direction: column; height: 100dvh; }
 @keyframes sl { from { transform: translateX(28px); opacity: .0 } to { transform: none; opacity: 1 } }
 @keyframes sr { from { transform: translateX(-28px); opacity: .0 } to { transform: none; opacity: 1 } }
 
-.day-head { text-align: center; margin: 6px 0 20px; }
-.day-head .dh-title { font-size: 22px; font-weight: 800; letter-spacing: .02em; }
-.day-head .dh-sub   { font-size: 13px; color: var(--ink-soft); margin-top: 4px; }
+.day-head { text-align: center; margin: 6px 0 22px; }
+.day-head .dh-title { font-size: 20px; font-weight: 800; letter-spacing: .02em; }
+.day-head .dh-sub   { font-size: 12.5px; color: var(--ink-soft); margin-top: 8px; letter-spacing: .02em; }
+
+/* thin progress bars shared by day header and browse overview */
+.dh-bookbar, .bp-bar {
+  height: 6px; max-width: 260px; margin: 10px auto 0;
+  border-radius: 3px; background: var(--line); overflow: hidden;
+}
+.dh-bookbar span, .bp-bar span {
+  display: block; height: 100%; border-radius: 3px; background: var(--accent);
+  transition: width .4s cubic-bezier(.4,0,.2,1);
+}
+.dh-bookbar.nt span, .bp-bar.nt span { background: var(--nt); }
+.dh-bookbar.ot span, .bp-bar.ot span { background: var(--ot); }
 .day-head .dh-badge {
   display: inline-block; margin-top: 12px; padding: 4px 14px; border-radius: 14px;
   font-size: 13px; font-weight: 700;
@@ -149,6 +170,9 @@ body { display: flex; flex-direction: column; height: 100dvh; }
   padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 17px;
 }
 .overlay-actions { display: flex; align-items: center; gap: 8px; }
+#browse-progress { padding: 14px 16px 4px; }
+#browse-progress .bp-bar { max-width: none; margin: 0; height: 8px; border-radius: 4px; }
+#browse-progress .bp-txt { margin-top: 8px; font-size: 13px; font-weight: 700; color: var(--ink-soft); }
 .overlay-hint { margin: 10px 16px 4px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.6; }
 .chip {
   height: 32px; padding: 0 12px; border-radius: 16px; border: 1.5px solid var(--accent);
