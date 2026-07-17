@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 venv/
 node_modules/
+
+# 稽核包是可重生的中間產物（364 份 / 約 20MB），由 make_audit_packets.py 產生
+audit/packets/

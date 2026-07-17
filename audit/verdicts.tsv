@@ -1,0 +1,10 @@
+# 每筆 findings 的人工裁決。override=已改（見 links_overrides.tsv）；reject=駁回，parser 正確
+id	verdict	note
+可14:20#1@145	override	承接前文路22:19（主晚餐）
+路11:49#1@78	override	行文脈絡「前文19節」，非引用，刪除
+路24:51#1@226	override	全形大綱編號，刪除
+路24:51#1@240	override	全形大綱編號，刪除
+路24:51#1@254	override	全形大綱編號，刪除
+徒13:34#1@108	override	承接詩89:19（聖者），非徒13:19
+詩2:1#1@35	override	「一篇」指詩1，非本章詩2
+彼前1:17#2@243	reject	括號是升冪清單1→2→4→4起於host本節；作者指4:17時寫「四17」帶章號，裸節「17」承接host章1。parser正確
