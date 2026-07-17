@@ -102,7 +102,11 @@ def parse_verse_md(path):
             body = "\n\n".join(
                 p.strip() for p in "\n".join(note_buf).split("\n\n") if p.strip()
             )
-            notes.append({"label": note_label, "body": body})
+            # 經文裡同一個註標出現兩次時，來源 md 會有兩個 **註N**，第二個是
+            # 空殼（上游依 (note_loc, note_num) 逐列輸出所致）。留著會讓標號
+            # 在一節內不唯一，且前端渲染出空白的註解框。
+            if body:
+                notes.append({"label": note_label, "body": body})
         note_label, note_buf = None, []
 
     for line in path.read_text(encoding="utf-8").splitlines():
