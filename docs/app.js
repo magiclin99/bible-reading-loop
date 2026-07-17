@@ -230,28 +230,6 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 't' || e.key === 'T') toggleTrack();
 });
 
-// ── Horizontal swipe (left/right = day) vs vertical scroll ───
-let sx = 0, sy = 0, swiping = false, decided = false, horiz = false;
-pager.addEventListener('touchstart', (e) => {
-  if (e.touches.length !== 1) return;
-  sx = e.touches[0].clientX; sy = e.touches[0].clientY;
-  swiping = true; decided = false; horiz = false;
-}, { passive: true });
-pager.addEventListener('touchmove', (e) => {
-  if (!swiping) return;
-  const dx = e.touches[0].clientX - sx, dy = e.touches[0].clientY - sy;
-  if (!decided && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
-    decided = true; horiz = Math.abs(dx) > Math.abs(dy) * 1.3;
-  }
-}, { passive: true });
-pager.addEventListener('touchend', (e) => {
-  if (!swiping) return; swiping = false;
-  if (!horiz) return;
-  const dx = e.changedTouches[0].clientX - sx;
-  if (Math.abs(dx) < 55) return;
-  if (dx < 0) next(); else prev();
-}, { passive: true });
-
 // ── Scroll persistence (throttled) ───────────────────────────
 let scrollTimer = null;
 pager.addEventListener('scroll', () => {
