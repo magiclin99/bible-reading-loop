@@ -10,6 +10,7 @@
   --ot:         #8a5a2b;     /* old testament amber */
   --read:       #3a8f5e;
   --note-bg:    #ece3d0;
+  --flash:      #ffe4a1;     /* 跳轉後「就是這裡」的定位提示 */
   --shadow:     0 2px 10px rgba(60,48,30,.12);
   --bar-h:      58px;
   --foot-h:     62px;
@@ -26,8 +27,8 @@
     --nt:       #6bbf93;
     --ot:       #d29a5c;
     --read:     #5fc487;
-    --note-bg:  #24201700;
     --note-bg:  #241f14;
+    --flash:    #5a4718;
     --shadow:   0 2px 12px rgba(0,0,0,.4);
   }
 }
@@ -138,6 +139,37 @@ body { display: flex; flex-direction: column; height: 100dvh; }
 }
 .notes .note p { margin: 0 0 8px; }
 .notes .note p:last-child { margin-bottom: 0; }
+
+/* 註解中的經節引用。用 text-decoration 底線（貼著文字字形，不像
+   border-bottom 會被 padding 推遠）。點擊區靠左右 padding + 負 margin
+   放大，不加上下 padding，以免底線離開文字。 */
+.notes .note a.ref {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  opacity: .92;
+  padding: 0 2px; margin: 0 -2px;
+}
+.notes .note a.ref:hover { opacity: 1; background: var(--paper-2); border-radius: 3px; }
+
+/* 「就是這裡」—— 跳轉後的短暫定位提示 */
+@keyframes flash-in {
+  0%   { background: transparent; }
+  18%  { background: var(--flash); }
+  70%  { background: var(--flash); }
+  100% { background: transparent; }
+}
+.verse.flash, .notes .note.flash {
+  animation: flash-in 1.8s ease-out;
+  border-radius: 8px;
+}
+
+/* 查考分頁：與正常閱讀分頁區隔，並隱藏會誤導的換日/進度操作 */
+body.peek #progress { display: none; }
+body.peek #bar-day {
+  font-weight: 800; color: var(--accent);
+}
 
 /* ── Footer ──────────────────────────────────────────── */
 #foot {
