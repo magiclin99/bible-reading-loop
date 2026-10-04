@@ -66,6 +66,12 @@ body { display: flex; flex-direction: column; height: 100dvh; }
   border: 1.5px solid currentColor; background: transparent;
   font-size: 14px; font-weight: 700; cursor: pointer; min-width: 52px;
 }
+.fold-toggle {
+  flex: 0 0 auto; height: 34px; padding: 0 10px; border-radius: 17px;
+  border: 1.5px solid var(--line); background: transparent; color: var(--ink-soft);
+  font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.fold-toggle.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .track-toggle.nt { color: var(--nt); }
 .track-toggle.ot { color: var(--ot); }
 
@@ -125,6 +131,33 @@ body { display: flex; flex-direction: column; height: 100dvh; }
 }
 .verse.has-note .vtext { border-bottom: 1px dashed var(--line); }
 .verse.open { background: var(--paper-2); border-radius: 8px; }
+
+/* 綱目：恆顯示，點一下收合它底下的經文（子綱目留著）。
+   各層同一個顏色，層級只靠縮排與字重區分；承接的綱目也不另外變淡，
+   只以「（續）」標示 —— 否則同一頁會出現三四種深淺，看起來像不同東西。 */
+.ol {
+  display: flex; align-items: baseline; gap: 4px; width: 100%;
+  margin: 0; padding: 4px 2px; border: none; border-radius: 6px;
+  background: transparent; color: var(--accent); text-align: left; cursor: pointer;
+  font-family: system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif;
+  font-size: 14px; font-weight: 500; line-height: 1.55;
+}
+.ol:active { background: var(--paper-2); }
+.ol-l1 { padding-left: 2px;  font-size: 16px; font-weight: 800; margin-top: 10px; }
+.ol-l2 { padding-left: 14px; font-size: 15px; font-weight: 700; }
+.ol-l3 { padding-left: 26px; font-size: 14.5px; font-weight: 600; }
+.ol-l4 { padding-left: 38px; }
+.ol-l5 { padding-left: 50px; }
+.ol-l6 { padding-left: 62px; }
+.ol-body + .ol { margin-top: 8px; }
+.ol-body + .ol.ol-l1 { margin-top: 18px; }
+.ol-tw { flex: 0 0 14px; font-size: 11px; opacity: .7; user-select: none; }
+.ol-tw::before { content: '▾'; }
+.ol.folded .ol-tw::before { content: '▸'; }
+.ol.empty { cursor: default; }
+.ol.empty .ol-tw { visibility: hidden; }
+.ol-r { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--ink-soft); white-space: nowrap; }
+.ol-body.folded { display: none; }
 
 .notes {
   margin: 2px 0 10px; padding: 12px 14px; border-radius: 10px;

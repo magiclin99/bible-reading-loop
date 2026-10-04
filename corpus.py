@@ -41,6 +41,15 @@ def load():
     return vmax, full, notes
 
 
+def verses():
+    """逐節產出 (簡稱, 章, 節, 經文)，經文含註標上標。"""
+    for f in sorted(glob.glob(str(DATA / "day-*.json"))):
+        d = json.loads(Path(f).read_text(encoding="utf-8"))
+        for tk in ("nt", "ot"):
+            for v in (d.get(tk) or {}).get("verses", []):
+                yield v["abbr"], v["ch"], v["v"], v["text"]
+
+
 def locator():
     """{簡稱: [[章, 節, 天, track], ...]} —— 每卷書各天區段的起點。
 

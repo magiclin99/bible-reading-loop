@@ -10,6 +10,8 @@
 - 右上角切換新約／舊約（同一天兩條軌道）。
 - 上下捲動讀經文；← → 鍵或底部按鈕切換前後天。
 - 點經節展開該節的恢復版註解，再點收合。
+- 經文之間穿插恢復版綱目。點綱目可收合它底下的經文；右上角「收合」
+  一次收起全部經文，只留當天的綱目（快捷鍵 `O`）。
 - 底部按鈕標記當天當軌道「讀完」；新約、舊約分開記。
 - 可瀏覽全部 364 天、跳到任一天，或把某天「設為第一天」
   （之後以那天為你的第 1 天，讀滿 364 天繞一圈）。
@@ -63,4 +65,8 @@ python3 scrape_oneyear.py          # -> data/oneyear_plan.json
 
 # 2) 產生網站資料（需要 verses/ 經文來源）
 python3 build_site_data.py         # -> docs/data/
+
+# 3) 把註解引用連結與綱目編譯進去（不需要 verses/）
+python3 apply_links.py             # links.tsv   -> docs/data/
+python3 apply_outline.py           # outline.tsv -> docs/data/
 ```
