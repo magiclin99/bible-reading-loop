@@ -35,6 +35,10 @@ let restoreScrollTo = null;        // px to restore after first render
 let pendingFlash = null;           // {book,ch,v} 待定位高亮的經節
 const openNotes = new Set();       // 展開中的註解，key = vkey()
 const vkey = (bk, ch, v) => `${bk}-${ch}-${v}`;
+// 收合中的綱目。只放記憶體：每次開啟都是「綱目＋經文」全展開，也不必碰
+// localStorage（查考分頁不可寫 state，見 saveState）。
+const folded = new Set();          // key = fkey(日段內的綱目序號)
+const fkey = (sec) => `${state.currentDay}-${state.currentTrack}-${sec}`;
 
 function loadState() {
   try { return Object.assign({}, defaults, JSON.parse(localStorage.getItem(LS_STATE) || '{}')); }
@@ -144,6 +148,7 @@ async function render(slideDir) {
 
   // body
   page.innerHTML = buildDayHTML(day, track);
+  syncFold();
   page.className = slideDir === 'next' ? 'slide-left' : slideDir === 'prev' ? 'slide-right' : '';
 
   // scroll: 定位高亮 > 還原上次位置 > 回到頂端（三者互斥，不可各自搶捲動）
@@ -192,29 +197,118 @@ function buildDayHTML(day, track) {
       <div class="dh-bookbar ${track}"><span style="width:${bookPct}%"></span></div>
       <div class="dh-sub">本卷 第 ${bp.pos} / ${bp.total} 天　·　${trackName}累積 ${done} / ${total}</div>
     </div>`;
+  // 綱目與經文是平鋪的兄弟節點：[綱目][經文區塊][綱目][經文區塊]…
+  // 每個 .ol-body 記著它屬於哪一條綱目（data-sec），收合就是藏掉 body。
+  // 章標、卷標放在 body 之外，全部收合後仍留著當路標。
   let curCh = null, curBook = null;
+  let sec = -1, nSec = 0, bodyOpen = false;
+  const openBody  = () => { if (!bodyOpen) { h += `<div class="ol-body" data-sec="${sec}">`; bodyOpen = true; } };
+  const closeBody = () => { if (bodyOpen) { h += `</div>`; bodyOpen = false; } };
+  const heading = (lv, text, carry) => { closeBody(); sec = nSec++; h += outlineHTML(sec, lv, text, carry); };
   for (const vs of t.verses) {
     if (vs.book !== curBook) {           // book change within a day (cross-book)
       curBook = vs.book; curCh = null;
       if (multiBook) {
+        closeBody();
         h += `<div class="book-mark" style="text-align:center;font-weight:800;font-size:18px;margin:22px 0 4px">${vs.book}</div>`;
       }
     }
     if (vs.ch !== curCh) {
       curCh = vs.ch;
       const unit = vs.abbr === '詩' ? '篇' : '章';
+      closeBody();
       h += `<div class="ch-mark" style="font-weight:700;color:var(--ink-soft);margin:16px 0 4px;font-size:14px">第 ${curCh} ${unit}</div>`;
     }
+    for (const [lv, text] of vs.carry || []) heading(lv, text, true);
+
     const hasNote = vs.notes && vs.notes.length;
     const k = vkey(vs.book, vs.ch, vs.v);
     const open = openNotes.has(k);
-    h += `<p class="verse${hasNote ? ' has-note' : ''}${open ? ' open' : ''}" data-bk="${escapeHTML(vs.book)}" data-ch="${vs.ch}" data-v="${vs.v}">`
-       + `<span class="vn">${vs.v}</span><span class="vtext">${escapeHTML(vs.text)}</span></p>`;
+    // 綱目可能落在一節的中間（如創1:2「…淵面黑暗。‖神的靈…」），那一節就
+    // 切成上下兩塊，各自歸屬不同的綱目。兩塊帶同樣的 data-bk/ch/v。
+    let pos = 0, part = 0;
+    const chunk = (end) => {
+      openBody();
+      h += `<p class="verse${hasNote ? ' has-note' : ''}${open ? ' open' : ''}${part ? ' cont' : ''}" data-bk="${escapeHTML(vs.book)}" data-ch="${vs.ch}" data-v="${vs.v}">`
+         + `<span class="vn">${vs.v}${part ? '下' : ''}</span><span class="vtext">${escapeHTML(vs.text.slice(pos, end))}</span></p>`;
+      pos = end; part++;
+    };
+    for (const [at, lv, text] of vs.outline || []) {
+      if (at > pos) chunk(at);
+      heading(lv, text, false);
+    }
+    chunk(vs.text.length);
     // 展開狀態存在 openNotes 而非只在 DOM，否則任何一次 render（例如按
     // 「標記讀完」）都會把使用者展開的註解全部清空。
     if (open) h += notesHTML(vs);
   }
+  closeBody();
   return h;
+}
+
+// ── 綱目 ─────────────────────────────────────────────────────
+function outlineHTML(sec, lv, text, carry) {
+  // 「壹　神的創造　一1～二25」以全形空白分段；末段帶數字的是經節範圍
+  const parts = text.split('\u3000');
+  const range = parts.length >= 3 && /[0-9０-９]/.test(parts[parts.length - 1]) ? parts.pop() : '';
+  let title = parts.join('\u3000');
+  // 承接自前幾天的綱目：沿用紙本「（續）」的標法
+  if (carry && !title.includes('續')) title += '（續）';
+  return `<button type="button" class="ol ol-l${lv}${carry ? ' carry' : ''}" data-sec="${sec}" data-lv="${lv}">`
+       + `<span class="ol-tw" aria-hidden="true"></span>`
+       + `<span class="ol-t">${escapeHTML(title)}${range ? `<span class="ol-r">${escapeHTML(range)}</span>` : ''}</span>`
+       + `</button>`;
+}
+
+// 綱目恆顯示，收合的只有經文。點一條綱目，收起它底下（含各層子綱目）的
+// 經文，子綱目本身留著 —— 所以全部收合後剩下的正是當日的綱目骨架。
+function foldScope() {
+  const heads = [...page.querySelectorAll('.ol')];
+  const bodies = [...page.querySelectorAll('.ol-body')];
+  const owns = new Set(bodies.map(b => +b.dataset.sec).filter(i => i >= 0));
+  // 某條綱目轄下、且真的帶有經文的綱目（含自己）
+  const under = (i) => {
+    const lv = +heads[i].dataset.lv, out = [];
+    for (let j = i; j < heads.length && (j === i || +heads[j].dataset.lv > lv); j++) {
+      if (owns.has(j)) out.push(j);
+    }
+    return out;
+  };
+  return { heads, bodies, owns: [...owns], under };
+}
+const allFolded = (secs) => secs.length > 0 && secs.every(j => folded.has(fkey(j)));
+function setFolded(secs, on) {
+  for (const j of secs) on ? folded.add(fkey(j)) : folded.delete(fkey(j));
+  syncFold();
+}
+function syncFold() {
+  const { heads, bodies, owns, under } = foldScope();
+  bodies.forEach(b => b.classList.toggle('folded', folded.has(fkey(b.dataset.sec))));
+  heads.forEach((x, i) => {
+    const secs = under(i), shut = allFolded(secs);
+    // 原始綱目有少數幾條在同一節上連續並列（如啟22:3 的 a、b、c），前幾條
+    // 底下沒有經文可收，就不給收合箭頭
+    x.classList.toggle('empty', !secs.length);
+    x.classList.toggle('folded', shut);
+    x.setAttribute('aria-expanded', String(!shut));
+  });
+  const btn = el('btn-fold');
+  btn.hidden = !owns.length;
+  const shut = allFolded(owns);
+  btn.classList.toggle('on', shut);
+  btn.textContent = shut ? '展開' : '收合';
+  btn.title = shut ? '展開全部經文' : '收合全部經文，只看綱目';
+}
+function toggleFold(i) {
+  const secs = foldScope().under(i);
+  setFolded(secs, !allFolded(secs));
+}
+function toggleFoldAll() {
+  const { owns } = foldScope();
+  if (!owns.length) return;
+  const shut = allFolded(owns);
+  setFolded(owns, !shut);
+  if (!shut) pager.scrollTop = 0;      // 收合後內容短很多，從頭看綱目
 }
 
 function escapeHTML(s) {
@@ -261,20 +355,28 @@ function linkify(text, off, links) {
 }
 
 // 捲到某節並短暫高亮「就是這裡」
+// 一節可能被綱目切成兩塊（見 buildDayHTML），註解框接在最後一塊之後
+function verseEls(book, ch, v) {
+  return [...page.querySelectorAll(
+    `.verse[data-bk="${CSS.escape(book)}"][data-ch="${ch}"][data-v="${v}"]`)];
+}
+
 function flashTo(book, ch, v, label) {
-  const sel = `.verse[data-bk="${CSS.escape(book)}"][data-ch="${ch}"][data-v="${v}"]`;
-  const t = page.querySelector(sel);
+  const els = verseEls(book, ch, v);
+  const t = els[0];
   if (!t) return;
+  const shut = els.map(x => x.closest('.ol-body.folded')).filter(Boolean);
+  if (shut.length) setFolded(shut.map(b => +b.dataset.sec), false);
   t.scrollIntoView({ block: 'center' });
   if (label) {
-    const box = t.nextElementSibling;
+    const box = els[els.length - 1].nextElementSibling;
     const nt = box && box.classList.contains('notes')
       && box.querySelector(`.note[data-label="${CSS.escape(label)}"]`);
     if (nt) nt.classList.add('flash');
   }
-  t.classList.add('flash');
+  els.forEach(x => x.classList.add('flash'));
   setTimeout(() => {
-    t.classList.remove('flash');
+    els.forEach(x => x.classList.remove('flash'));
     page.querySelectorAll('.note.flash').forEach(x => x.classList.remove('flash'));
   }, 1800);
 }
@@ -282,20 +384,24 @@ function flashTo(book, ch, v, label) {
 // ── Verse note expand (event delegation) ─────────────────────
 page.addEventListener('click', (e) => {
   if (e.target.closest('a.ref')) return;      // 引用連結自己開新分頁
+  const ol = e.target.closest('.ol');
+  if (ol) { toggleFold(+ol.dataset.sec); return; }
   const v = e.target.closest('.verse');
   if (!v) return;
   const k = vkey(v.dataset.bk, +v.dataset.ch, +v.dataset.v);
-  const existing = v.nextElementSibling;
+  const els = verseEls(v.dataset.bk, v.dataset.ch, v.dataset.v);
+  const last = els[els.length - 1];
+  const existing = last.nextElementSibling;
   if (existing && existing.classList.contains('notes')) {
-    existing.remove(); v.classList.remove('open'); openNotes.delete(k); return;
+    existing.remove(); els.forEach(x => x.classList.remove('open')); openNotes.delete(k); return;
   }
   const day = cache.get(state.currentDay);
   const vs = day[state.currentTrack].verses.find(
     x => x.book === v.dataset.bk && x.ch == v.dataset.ch && x.v == v.dataset.v);
   const html = vs && notesHTML(vs);
   if (!html) return;
-  v.classList.add('open');
-  v.insertAdjacentHTML('afterend', html);
+  els.forEach(x => x.classList.add('open'));
+  last.insertAdjacentHTML('afterend', html);
   openNotes.add(k);                            // 讓展開狀態撐過下一次 render
 });
 
@@ -339,6 +445,7 @@ el('btn-next').onclick = next;
 el('btn-prev').onclick = prev;
 el('btn-track').onclick = toggleTrack;
 el('btn-read').onclick = toggleRead;
+el('btn-fold').onclick = toggleFoldAll;
 
 // keyboard
 window.addEventListener('keydown', (e) => {
@@ -346,6 +453,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') next();
   else if (e.key === 'ArrowLeft') prev();
   else if (e.key === 't' || e.key === 'T') toggleTrack();
+  else if (e.key === 'o' || e.key === 'O') toggleFoldAll();
 });
 
 // ── Scroll persistence (throttled) ───────────────────────────
