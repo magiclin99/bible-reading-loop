@@ -9,6 +9,7 @@
 - 網站是純靜態的，**執行時只讀 `docs/`**。所有 `.py`、`links.tsv`、`audit/`
   都是 build 工具或記錄，不會被運行中的網站載入。
 - 核心資料流：`refs.py`（解析器）→ `links.tsv`（可稽核清單）→ `docs/data`（編譯產物）→ `docs/app.js`（前端渲染）。
+- 綱目是另一條平行的管線：恢復本資料庫 → `outline.tsv` → `docs/data`，與連結互不影響。
 
 ## 檔案地圖
 
@@ -27,6 +28,17 @@
 | `links.tsv` | 29371 個連結的清單，**這是可稽核的成品**（進版控） |
 | `links_overrides.tsv` | 人工修正（稽核抓到的語意錯誤）。**不可刪**，刪了重建會退回錯連結 |
 
+### 綱目管線
+| 檔案 | 作用 |
+|---|---|
+| `build_outline.py` | 恢復本資料庫 → `outline.tsv`。**需要資料庫實體檔**（見下） |
+| `apply_outline.py` | 把 `outline.tsv` 編譯進 docs/data（每節的 `outline` / `carry` 欄位） |
+| `outline.tsv` | 3141 條綱目的清單，進版控。平常重建只需要它，不需要資料庫 |
+
+資料庫是 `../cloud-food/db/bible.sqlite`（Git LFS；沒 pull 時只是 133 bytes 的
+指標檔），同一個檔也在 `../bible-mcp/Bible20240820.sqlite`。綱目在
+`outline_all_big5_05` 表，欄位名會誤導，對照寫在 `build_outline.py` 檔頭。
+
 ### 建置（源頭重建，需要 `../cloud-food/verses`）
 - `build_site_data.py` — 計畫 + 經文源 → docs/data
 - `scrape_oneyear.py` — 抓讀經計畫
@@ -43,6 +55,12 @@ python3 test_refs.py      # 必須全綠
 python3 apply_links.py    # links.tsv → docs/data
 ```
 改 `docs/data` 註解或改 `refs.py` 後跑這三步。**只跑這個不需要 verses/。**
+
+`build_site_data.py` 從頭重建 docs/data 之後，連結和綱目都要重新編譯進去：
+```bash
+python3 apply_links.py
+python3 apply_outline.py  # outline.tsv → docs/data，可重複執行
+```
 
 ## 地雷（都是實際踩過、修過的，別重犯）
 
@@ -70,9 +88,22 @@ python3 apply_links.py    # links.tsv → docs/data
 8. **驗證的「零失敗」只證明目標存在，不證明指對了**。承接錯誤（如可14:20）
    目標是存在的，只有語意判讀抓得到。這是 audit/ 那輪稽核存在的理由。
 
+9. **綱目收合狀態只放記憶體**（`folded`），不寫 localStorage。理由同第 4 點，
+   而且預設就該是「綱目＋經文」全展開。
+
+10. **一節可能是兩個 `.verse` 元素**。74 節被綱目從中間切開（如創1:2），上下
+    兩塊帶同樣的 `data-bk/ch/v`。找經節一律用 `verseEls()`，註解框接在最後
+    一塊之後；用 `querySelector` 只會拿到上半節。
+
+11. **綱目收的是經文，不是子綱目**。點一條綱目只藏它轄下的 `.ol-body`，各層
+    子綱目照樣顯示，所以「全部收合」剩下的是當日綱目骨架。少數綱目在原始
+    資料裡同節並列、底下沒有經文（`.ol.empty`），不可收合。
+
 ## 驗證真的動起來
 
 改完務必實跑，不能只看程式碼：
 - `python3 test_refs.py` 全綠
 - `cd docs && python3 -m http.server 8000`，實測 deep link（`#ref=加3:14` 應落在
   加拉太書、`#ref=伯9:5&n=1` 應展開註1）、跨分頁不覆蓋閱讀位置
+- 綱目：舊約第 1 天（創1:2 應切成「2」「2下」兩塊）、右上「收合」後只剩綱目、
+  點單條綱目只收它底下的經文
