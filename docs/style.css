@@ -243,6 +243,12 @@ body.peek #bar-day {
   height: 32px; padding: 0 12px; border-radius: 16px; border: 1.5px solid var(--accent);
   background: transparent; color: var(--accent); font-weight: 700; font-size: 13px; cursor: pointer;
 }
+.sync {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 6px 16px 2px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.5;
+}
+#sync-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync .chip { flex: 0 0 auto; }
 #browse-list { flex: 1 1 auto; overflow-y: auto; padding: 8px 12px calc(20px + env(safe-area-inset-bottom)); }
 
 .card {
@@ -263,6 +269,19 @@ body.peek #bar-day {
   font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
 }
 .card.is-start .card-set { background: var(--accent); color: var(--accent-ink); }
+
+/* ── Modal（剛登入時位置不一致的詢問）───────────────── */
+.modal {
+  position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal-box {
+  width: 100%; max-width: 380px; padding: 20px; border-radius: 14px;
+  background: var(--paper); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 10px; font-size: 16px;
+}
+.modal-box p { margin: 0 0 4px; font-size: 13.5px; color: var(--ink-soft); line-height: 1.6; }
+.modal-box .chip { height: auto; min-height: 44px; padding: 8px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; }
 
 /* ── Toast ───────────────────────────────────────────── */
 .toast {

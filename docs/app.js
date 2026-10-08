@@ -4,6 +4,10 @@
 const TOTAL = 364;                 // day 365 source is a 404; plan is 364 days
 const LS_STATE = 'blr:state';
 const LS_READ  = 'blr:read';
+const LS_STAMPS = 'blr:stamps';    // 已讀標記的時間戳，跨裝置合併用
+const LS_SYNC  = 'blr:sync';       // 這台裝置登入過同步 -> 開機時才載 Firebase
+                                   // 'link' = 剛登入，位置還沒跟帳號對過；'1' = 已對過
+const LS_ONETAP = 'blr:onetap';    // 關掉過 One Tap 或登出過 -> 不再自動跳登入
 
 // ── Deep link ────────────────────────────────────────────────
 // #ref=創5:1 或 #ref=伯9:5&n=1
@@ -26,9 +30,14 @@ const PEEK = parseHash();
 let peekView = !!PEEK;
 
 // ── State ────────────────────────────────────────────────────
-const defaults = { startDay: 1, currentDay: 1, currentTrack: 'nt', scroll: {} };
+// posAt：閱讀位置（startDay/currentDay/currentTrack）最後一次被使用者改動的
+// 時間，跨裝置同步時整組比新舊。
+const defaults = { startDay: 1, currentDay: 1, currentTrack: 'nt', scroll: {}, posAt: 0 };
 let state = loadState();
 let read  = loadRead();
+let stamps = loadStamps();         // readKey -> 最後一次標記或取消的時間
+const posSig = () => `${state.startDay}|${state.currentDay}|${state.currentTrack}`;
+let lastPos = posSig();            // 上次存檔時的位置，用來判斷位置是否真的變了
 let index = null;                  // data/index.json
 const cache = new Map();           // origDay -> day bundle
 let restoreScrollTo = null;        // px to restore after first render
@@ -41,11 +50,18 @@ const folded = new Set();          // key = fkey(日段內的綱目序號)
 const fkey = (sec) => `${state.currentDay}-${state.currentTrack}-${sec}`;
 
 function loadState() {
-  try { return Object.assign({}, defaults, JSON.parse(localStorage.getItem(LS_STATE) || '{}')); }
-  catch { return Object.assign({}, defaults); }
+  let s;
+  try { s = Object.assign({}, defaults, JSON.parse(localStorage.getItem(LS_STATE) || '{}')); }
+  catch { s = Object.assign({}, defaults); }
+  // 有同步之前就存下的位置沒有 posAt。給它最小的正值：年代不明，但確實是
+  // 使用者讀到的地方，要贏過另一台全新裝置的預設值（posAt 0）。
+  if (!s.posAt && (s.startDay !== 1 || s.currentDay !== 1 || s.currentTrack !== 'nt')) s.posAt = 1;
+  return s;
 }
 function saveState() {
   if (PEEK) return;                // 見上：查考分頁不可覆蓋閱讀位置
+  // render() 每次都會存檔（標記已讀、捲動也會），只有位置真的變了才算改動
+  if (posSig() !== lastPos) { lastPos = posSig(); state.posAt = Date.now(); syncSoon(); }
   try { localStorage.setItem(LS_STATE, JSON.stringify(state)); } catch {}
 }
 
@@ -65,7 +81,16 @@ function loadRead() {
   try { return new Set(JSON.parse(localStorage.getItem(LS_READ) || '[]')); }
   catch { return new Set(); }
 }
-function saveRead() { try { localStorage.setItem(LS_READ, JSON.stringify([...read])); } catch {} }
+function loadStamps() {
+  try { return JSON.parse(localStorage.getItem(LS_STAMPS) || '{}') || {}; }
+  catch { return {}; }
+}
+function saveRead() {
+  try {
+    localStorage.setItem(LS_STAMPS, JSON.stringify(stamps));
+    localStorage.setItem(LS_READ, JSON.stringify([...read]));
+  } catch {}
+}
 
 // ── Day numbering (loop) ─────────────────────────────────────
 // startDay only relabels; reading order is the natural cyclic 1..TOTAL.
@@ -430,6 +455,7 @@ function toggleRead() {
   const orig = state.currentDay, track = state.currentTrack;
   const k = readKey(orig, track);
   const label = track === 'nt' ? '新約' : '舊約';
+  stamps[k] = Date.now();
   if (read.has(k)) { read.delete(k); toast(`已取消：${label}`); }
   else {
     read.add(k);
@@ -438,6 +464,7 @@ function toggleRead() {
     else toast(`✓ 標記${label}讀完`);
   }
   saveRead();
+  syncSoon();
   render();
 }
 
@@ -449,7 +476,7 @@ el('btn-fold').onclick = toggleFoldAll;
 
 // keyboard
 window.addEventListener('keydown', (e) => {
-  if (!el('browse').hidden) return;
+  if (!el('browse').hidden || !el('link').hidden) return;
   if (e.key === 'ArrowRight') next();
   else if (e.key === 'ArrowLeft') prev();
   else if (e.key === 't' || e.key === 'T') toggleTrack();
@@ -473,6 +500,7 @@ function openBrowse() {
   browseTrack = state.currentTrack;
   renderBrowse();
   el('browse').hidden = false;
+  loadFirebase().catch(() => {});      // 先載好，按登入時才能同步開視窗（見 btn-sync）
 }
 function closeBrowse() { el('browse').hidden = true; }
 
@@ -548,16 +576,252 @@ function toast(msg) {
 
 // ── 跨分頁同步 ───────────────────────────────────────────────
 // 開新分頁查考成為常態後，兩個分頁各自 saveRead() 會整包互相覆蓋。
-window.addEventListener('storage', (e) => {
-  if (e.key !== LS_READ) return;
-  read = loadRead();
+function refreshReadUI() {
   updateProgress(state.currentTrack);
   const done = isRead(state.currentDay, state.currentTrack);
   const label = state.currentTrack === 'nt' ? '新約' : '舊約';
   const rb = el('btn-read');
   rb.className = `read-btn${done ? ' done' : ''}`;
   rb.textContent = done ? `✓ ${label}已讀完` : `標記${label}讀完`;
+}
+window.addEventListener('storage', (e) => {
+  if (e.key !== LS_READ && e.key !== LS_STAMPS) return;
+  read = loadRead();
+  stamps = loadStamps();
+  refreshReadUI();
+  syncSoon();                      // 查考分頁不連雲端，它標的已讀由原分頁代傳
 });
+
+// ── 跨裝置同步（Firebase，選用）──────────────────────────────
+// localStorage 仍是唯一的真相來源，雲端只是另一份拿來合併的副本。沒設定
+// firebase-config.js、沒登入、離線時，閱讀器的行為完全不變。
+//
+// 合併規則：
+//   已讀標記 —— 逐筆比時間戳，新的贏。不可取聯集：取消已讀會在另一台復活。
+//              時間戳相同時已讀贏；舊資料沒有時間戳，一律當 0，所以兩台
+//              舊裝置第一次登入的結果正好是聯集。
+//   閱讀位置 —— startDay/currentDay/currentTrack 整組比 posAt，新的贏。
+//              例外是剛登入的第一次同步：這台和帳號各有各的位置時，時間戳
+//              分不出誰才是真正的進度（在新裝置上隨手翻兩頁就會比讀了
+//              23 天的舊位置「新」），所以問使用者，見 askLink()。
+//   捲動位置 —— 不同步。px 在手機與電腦上對不到同一處。
+//
+// 查考分頁完全不碰雲端（loadFirebase 單點擋掉），理由同 saveState 的 guard。
+const FB_CFG = window.FIREBASE_CONFIG || null;
+const FB_VER = '12.4.0';
+let fb = null, fbLoading = null;   // SDK 只在登入過或打開日程頁時才載
+let user = null;
+let expectUser = false;            // 這台登入過，等 SDK 回報登入狀態中
+let syncTimer = null, syncBusy = false, syncAgain = false, syncErr = false;
+
+function loadFirebase() {
+  if (!FB_CFG || PEEK) return Promise.resolve(null);
+  return fbLoading || (fbLoading = (async () => {
+    const base = `https://www.gstatic.com/firebasejs/${FB_VER}/firebase-`;
+    const [app, auth, fs] = await Promise.all(
+      ['app', 'auth', 'firestore-lite'].map(m => import(`${base}${m}.js`)));
+    const { emulator, googleClientId, ...cfg } = FB_CFG;
+    const a = app.initializeApp(cfg);
+    const f = { auth: auth.getAuth(a), db: fs.getFirestore(a), authApi: auth, fs };
+    if (emulator) {                // 本機測試：firebase emulators:start（見 CLAUDE.md）
+      auth.connectAuthEmulator(f.auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+      fs.connectFirestoreEmulator(f.db, '127.0.0.1', 8088);
+    }
+    auth.onAuthStateChanged(f.auth, (u) => {
+      user = u; expectUser = false;
+      try {
+        if (!u) localStorage.removeItem(LS_SYNC);
+        else if (!localStorage.getItem(LS_SYNC)) localStorage.setItem(LS_SYNC, 'link');
+      } catch {}
+      renderSync();
+      if (u) syncNow();
+    });
+    return fb = f;
+  })().catch((e) => { fbLoading = null; throw e; }));
+}
+
+const validMark = (k) => { const m = /^([1-9]\d{0,2})-(nt|ot)$/.exec(k); return !!m && +m[1] <= TOTAL; };
+const validDay  = (n) => Number.isInteger(n) && n >= 1 && n <= TOTAL;
+
+// 把雲端那份併進本機；回傳要寫回雲端的整份文件，雲端已是最新則回傳 null。
+function mergeRemote(remote) {
+  const rMarks = (remote && remote.marks) || {}, rPos = (remote && remote.pos) || {};
+  let push = !remote, marksChanged = false;
+
+  for (const k of new Set([...read, ...Object.keys(stamps), ...Object.keys(rMarks)])) {
+    if (!validMark(k)) continue;
+    const lr = read.has(k), lt = stamps[k] || 0;
+    const rr = !!(rMarks[k] && rMarks[k].r), rt = +(rMarks[k] && rMarks[k].t) || 0;
+    if (rt > lt || (rt === lt && rr && !lr)) {
+      rr ? read.add(k) : read.delete(k);
+      if (rt) stamps[k] = rt;
+      marksChanged = true;
+    } else if (lt > rt || lr !== rr) push = true;
+  }
+
+  const lt = state.posAt || 0, rt = +rPos.at || 0;
+  const rValid = validDay(rPos.startDay) && validDay(rPos.currentDay) &&
+                 (rPos.currentTrack === 'nt' || rPos.currentTrack === 'ot');
+  const rSig = `${rPos.startDay}|${rPos.currentDay}|${rPos.currentTrack}`;
+  let moved = false, hold = false;
+  if (linking() && rValid && lt > 0 && rt > 0 && rSig !== posSig()) {
+    hold = true;                   // 兩邊都動過位置：先擱著，等使用者選
+    askLink(rPos);
+  } else if (rt > lt && rValid) {
+    const before = posSig();
+    state.startDay = rPos.startDay;
+    state.currentDay = rPos.currentDay;
+    state.currentTrack = rPos.currentTrack;
+    state.posAt = rt;
+    lastPos = posSig();            // 這是別台的改動，不可在 saveState 被蓋成現在
+    moved = lastPos !== before;
+    if (moved) state.scroll = {};
+    saveState();
+  } else if (lt > rt) push = true;
+  if (!hold) linked();
+
+  if (marksChanged) saveRead();
+  if (moved) {
+    render().then(() => toast(`已接續其他裝置的進度：第 ${userDayOf(state.currentDay)} 天 · ${state.currentTrack === 'nt' ? '新約' : '舊約'}`));
+  } else if (marksChanged) refreshReadUI();
+  if ((moved || marksChanged) && !el('browse').hidden) renderBrowse();
+
+  if (!push) return null;
+  const marks = {};
+  for (const k of new Set([...read, ...Object.keys(stamps)])) {
+    if (validMark(k)) marks[k] = { r: read.has(k), t: stamps[k] || 0 };
+  }
+  // 位置擱著時，已讀照常上傳，雲端的位置原封不動寫回去
+  const p = hold ? { ...rPos, posAt: rt } : state;
+  return { v: 1, marks, pos: {
+    startDay: p.startDay, currentDay: p.currentDay,
+    currentTrack: p.currentTrack, at: p.posAt || 0,
+  } };
+}
+
+// 剛登入、這台和帳號的位置不一樣時問一次。已讀標記不受影響，兩邊照常合併。
+// 選擇只是調整本機的 posAt，讓下一輪同步照平常的「新的贏」得出使用者要的結果。
+const linking = () => { try { return localStorage.getItem(LS_SYNC) === 'link'; } catch { return false; } };
+function linked() { try { if (linking()) localStorage.setItem(LS_SYNC, '1'); } catch {} }
+function posLabel(p) {
+  const t = index.days[p.currentDay - 1][p.currentTrack];
+  const n = ((p.currentDay - p.startDay + TOTAL) % TOTAL) + 1;
+  return `第 ${n} 天 · ${t ? t.ref : (p.currentTrack === 'nt' ? '新約' : '舊約')}`;
+}
+function askLink(rPos) {
+  el('link-local').textContent = `這台裝置：${posLabel(state)}`;
+  el('link-remote').textContent = `帳號裡的：${posLabel(rPos)}`;
+  el('link').hidden = false;
+}
+function chooseLink(keepLocal) {
+  state.posAt = keepLocal ? Date.now() : 0;
+  saveState();
+  linked();
+  el('link').hidden = true;
+  syncNow();
+}
+el('link-local').onclick  = () => chooseLink(true);
+el('link-remote').onclick = () => chooseLink(false);
+
+// 每次都是「拉 → 併 → 有差才寫」，所以重複呼叫是安全的。
+async function syncNow() {
+  clearTimeout(syncTimer); syncTimer = null;
+  if (!user) return;
+  if (syncBusy) { syncAgain = true; return; }
+  syncBusy = true;
+  try {
+    const { doc, getDoc, setDoc } = fb.fs;
+    const ref = doc(fb.db, 'progress', user.uid);
+    const snap = await getDoc(ref);
+    const out = mergeRemote(snap.exists() ? snap.data() : null);
+    if (out) await setDoc(ref, out);
+    syncErr = false;
+  } catch (e) {
+    syncErr = true;
+    console.warn('同步失敗', e);
+  }
+  syncBusy = false;
+  renderSync();
+  if (syncAgain) { syncAgain = false; syncSoon(); }
+}
+function syncSoon() {
+  if (!user) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, 2500);
+}
+
+// 回到分頁時拉一次（另一台可能讀過了）；離開時把還沒送出的變更趕快送掉
+function syncWake() {
+  if (user) syncNow();
+  else if (expectUser) loadFirebase().catch(() => {});   // 開機時離線沒載到 SDK
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') syncWake();
+  else if (syncTimer) syncNow();
+});
+window.addEventListener('online', syncWake);
+
+function renderSync() {
+  if (!FB_CFG || PEEK) return;
+  el('sync').hidden = false;
+  el('sync-txt').textContent =
+    user ? `${syncErr ? '同步失敗，會自動重試' : '已開啟跨裝置同步'} · ${user.email || ''}`
+         : expectUser ? '同步連線中…' : '登入後，閱讀進度會跨裝置同步';
+  const btn = el('btn-sync');
+  btn.hidden = !user && expectUser;
+  btn.textContent = user ? '登出' : '以 Google 登入';
+}
+el('btn-sync').onclick = async () => {
+  try {
+    if (user) {
+      await fb.authApi.signOut(fb.auth);
+      oneTapOff();                 // 自己登出的人，下次開頁別再跳出來問
+      toast('已登出，這台裝置的進度仍保留');
+      return;
+    }
+    // Safari 只准在點擊的同一拍開視窗；SDK 若還沒載完，await 之後就會被擋，
+    // 所以 openBrowse 先預載，這裡的 await 只是保底。
+    const f = fb || await loadFirebase();
+    await f.authApi.signInWithPopup(f.auth, new f.authApi.GoogleAuthProvider());
+  } catch (e) {
+    const code = e && e.code;
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return;
+    toast(code === 'auth/popup-blocked' ? '登入視窗被擋下，請再按一次' : '登入失敗，請稍後再試');
+  }
+};
+
+// ── Google One Tap ───────────────────────────────────────────
+// 一進頁面就浮出的「以 XXX 的身分繼續」。只給還沒登入過的裝置看，而且只問
+// 一次：關掉就記在 LS_ONETAP，之後要登入走日程頁的按鈕。查考分頁不問。
+// 這裡只載 Google 的登入腳本；Firebase SDK 等使用者真的點了才載。
+function oneTapOff() { try { localStorage.setItem(LS_ONETAP, 'off'); } catch {} }
+function offerOneTap() {
+  if (!FB_CFG || !FB_CFG.googleClientId || PEEK || expectUser) return;
+  try { if (localStorage.getItem(LS_ONETAP)) return; } catch { return; }
+  const s = document.createElement('script');
+  s.src = 'https://accounts.google.com/gsi/client';
+  s.async = true;
+  s.onload = () => {
+    google.accounts.id.initialize({
+      client_id: FB_CFG.googleClientId,
+      use_fedcm_for_prompt: true,
+      callback: async (resp) => {
+        try {
+          const f = await loadFirebase();
+          await f.authApi.signInWithCredential(
+            f.auth, f.authApi.GoogleAuthProvider.credential(resp.credential));
+          toast('已登入，閱讀進度會跨裝置同步');
+        } catch (e) {
+          console.warn('One Tap 登入失敗', e);
+          toast('登入失敗，請稍後再試');
+        }
+      },
+    });
+    // FedCM 下只剩 skipped / dismissed 兩種通知可查；skipped = 使用者按了關閉
+    google.accounts.id.prompt((n) => { if (n.isSkippedMoment()) oneTapOff(); });
+  };
+  document.head.appendChild(s);
+}
 
 // ── Boot ─────────────────────────────────────────────────────
 (async function boot() {
@@ -591,6 +855,12 @@ window.addEventListener('storage', (e) => {
   }
 
   await render();
+
+  // 登入過的裝置才在開機時載 Firebase；沒用同步的人不必多下載 SDK
+  try { expectUser = !!FB_CFG && !!localStorage.getItem(LS_SYNC); } catch {}
+  renderSync();
+  if (expectUser) loadFirebase().catch(() => {});
+  else offerOneTap();
 
   if (resumed) {
     const label = state.currentTrack === 'nt' ? '新約' : '舊約';
