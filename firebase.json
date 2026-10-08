@@ -1,0 +1,8 @@
+{
+  "firestore": { "rules": "firestore.rules", "location": "asia-east1" },
+  "emulators": {
+    "auth": { "port": 9099 },
+    "firestore": { "port": 8088 },
+    "ui": { "enabled": false }
+  }
+}
