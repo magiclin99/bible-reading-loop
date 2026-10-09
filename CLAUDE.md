@@ -16,6 +16,9 @@
 ### 網站本體（改這些會直接影響使用者）
 - `docs/index.html` `docs/app.js` `docs/style.css` — 前端
 - `docs/data/day-NNN.json` `docs/data/index.json` — **編譯產物，不要手改**
+- `docs/firebase-config.js` — 跨裝置同步的 Firebase 設定；`null` = 功能整個關閉
+- `firestore.rules` `firebase.json` — 同步的安全規則與模擬器設定（網站不載入，
+  但規則是雲端資料唯一的防線）
 
 ### 引用連結管線（改註解或解析規則時用）
 | 檔案 | 作用 |
@@ -99,11 +102,41 @@ python3 apply_outline.py  # outline.tsv → docs/data，可重複執行
     子綱目照樣顯示，所以「全部收合」剩下的是當日綱目骨架。少數綱目在原始
     資料裡同節並列、底下沒有經文（`.ol.empty`），不可收合。
 
+12. **同步不可取聯集，也不可在套用雲端資料時重蓋時間戳**。已讀標記逐筆比
+    `blr:stamps` 的時間（取消已讀也是一筆改動，取聯集會讓它在另一台復活）；
+    閱讀位置比 `state.posAt`。`mergeRemote()` 套用別台的位置時先把 `lastPos`
+    對齊，否則 `saveState()` 會把它當成本機剛改的、蓋成現在時間，下次就
+    反過來壓掉真正較新的那台。
+
+13. **查考分頁完全不碰雲端**（`loadFirebase()` 單點擋掉，理由同第 4 點）。它
+    標的已讀靠 `storage` 事件由原分頁代傳。
+
+14. **登入按鈕不可在 `await` 之後才開視窗**。Safari 只准在點擊的同一拍
+    `window.open`，所以 SDK 在打開日程頁時就預載；別為了省流量改成按下才載。
+
+15. **剛登入的第一次同步，位置不可照時間戳自動決定**。在新裝置上隨手翻兩頁
+    的時間戳，會比另一台讀了 23 天、升級前沒有時間戳的位置「新」，照「新的
+    贏」就把真正的進度蓋掉了。所以 `blr:sync` 有 `link`（剛登入）這個狀態：
+    兩邊都動過位置且不同時 `askLink()` 問使用者，期間位置擱著、已讀照常
+    合併。選完才轉成 `1`，重新整理也不會跳過這一問。
+
+16. **One Tap 只問一次，且不可拖著 Firebase SDK 一起載**。`offerOneTap()` 只載
+    Google 的登入腳本，使用者點了才 `loadFirebase()`；關掉或登出就寫
+    `blr:onetap`，之後不再跳。它的浮層是瀏覽器畫的（FedCM），不在 DOM 裡，
+    自動化截圖看不到，只能人眼驗。
+
 ## 驗證真的動起來
 
 改完務必實跑，不能只看程式碼：
 - `python3 test_refs.py` 全綠
 - `cd docs && python3 -m http.server 8000`，實測 deep link（`#ref=加3:14` 應落在
   加拉太書、`#ref=伯9:5&n=1` 應展開註1）、跨分頁不覆蓋閱讀位置
+- 同步：`firebase emulators:start --only auth,firestore --project demo-blr`，
+  把 `docs/firebase-config.js` 暫時改成
+  `{ apiKey: 'demo', authDomain: 'demo-blr.firebaseapp.com', projectId: 'demo-blr', emulator: true }`，
+  用兩個不同 port 的 http.server 當兩台裝置（origin 不同，localStorage 就分開）。
+  現在設定檔裡是正式專案，別直接改它：另開一個目錄把 `docs/` 的檔案 symlink
+  過去、只換掉 `firebase-config.js`，從那裡起 server。瀏覽器會快取 `app.js`，
+  改完程式要強制重新整理
 - 綱目：舊約第 1 天（創1:2 應切成「2」「2下」兩塊）、右上「收合」後只剩綱目、
   點單條綱目只收它底下的經文

@@ -16,7 +16,11 @@
 - 可瀏覽全部 364 天、跳到任一天，或把某天「設為第一天」
   （之後以那天為你的第 1 天，讀滿 364 天繞一圈）。
 - 重新整理會回到上次的天／軌道／捲動位置，並提示已恢復。
-- 進度存在瀏覽器 `localStorage`（`blr:state`、`blr:read`），不跨裝置同步。
+- 進度存在瀏覽器 `localStorage`（`blr:state`、`blr:read`）。
+- 跨裝置同步（選用）：以 Google 登入後，已讀標記與閱讀位置會同步到其他裝置。
+  還沒登入過的裝置開頁時會跳一次 Google One Tap；關掉後就不再跳，之後從
+  「全部日程」裡的按鈕登入。需要先設定 Firebase，見下方「跨裝置同步」；沒設定時
+  不會出現登入列。
 
 ## 目錄結構
 
@@ -56,6 +60,33 @@ python3 -m http.server 8000
 
 幾分鐘後即可在 `https://magiclin99.github.io/bible-reading-loop/` 開啟。
 所有資源都用相對路徑，子路徑下也能正常運作。
+
+## 跨裝置同步（選用）
+
+用 Firebase 免費方案（Spark，不綁信用卡就不會產生費用），沒有自己的後端。
+
+1. 到 [Firebase 主控台](https://console.firebase.google.com/) 建專案。
+2. **Authentication → Sign-in method** 啟用 Google；**Settings → Authorized
+   domains** 加入 `magiclin99.github.io`。
+3. **Firestore Database** 建立資料庫，選「正式版模式」（不要選測試模式）。
+4. 部署安全規則：`firebase deploy --only firestore:rules --project <專案 ID>`，
+   或把 `firestore.rules` 的內容貼到主控台的「規則」分頁。
+5. **專案設定 → 你的應用程式** 新增網頁應用程式，把得到的 `firebaseConfig`
+   物件貼進 `docs/firebase-config.js`（取代 `null`）。
+6. One Tap：到 Google Cloud Console → API 和服務 → 憑證，打開 Firebase 自動
+   建立的 Web client，在「已授權的 JavaScript 來源」加上
+   `https://magiclin99.github.io`、`http://localhost`、`http://localhost:8000`，
+   再把它的用戶端 ID 填進 `firebase-config.js` 的 `googleClientId`。
+   不填就不跳 One Tap，只留日程頁的登入按鈕。
+7. （建議）到 Google Cloud Console → API 和服務 → 憑證，把那把 API key 的
+   HTTP 參照網址限制為 `magiclin99.github.io/*` 和 `localhost`。
+
+`firebase-config.js` 的內容是公開值，可以進版控；擋人的是 `firestore.rules`
+（每個人只能讀寫自己的 `progress/{uid}`）。
+
+合併規則：已讀標記逐筆比時間、新的贏（取消已讀也會同步）；閱讀位置整組
+新的贏；捲動位置不同步。唯一會問人的情況：剛登入時，這台裝置和帳號裡的
+閱讀位置不一樣，會跳出來讓你選要接續哪一個（已讀記錄不受影響）。
 
 ## 資料重建（選用）
 

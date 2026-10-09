@@ -1,0 +1,21 @@
+rules_version = '2';
+
+// 跨裝置同步的唯一防線。docs/firebase-config.js 裡的設定是公開的，
+// 能不能讀寫全看這裡：每個人只碰得到自己那一份 progress/{uid}。
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /progress/{uid} {
+      function own() { return request.auth != null && request.auth.uid == uid; }
+
+      allow read, delete: if own();
+      // 形狀與大小也卡住，免得被當成免費的任意儲存空間。
+      // 728 = 364 天 x 新舊約兩軌，已讀標記的上限。
+      allow create, update: if own()
+        && request.resource.data.keys().hasOnly(['v', 'marks', 'pos'])
+        && request.resource.data.marks is map
+        && request.resource.data.marks.size() <= 728
+        && request.resource.data.pos is map
+        && request.resource.data.pos.keys().hasOnly(['startDay', 'currentDay', 'currentTrack', 'at']);
+    }
+  }
+}
