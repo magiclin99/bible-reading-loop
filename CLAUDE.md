@@ -49,11 +49,17 @@
 | `build_audio.py` | 抓網上聖經恢復本的逐章時間軸 → `audio.tsv` + 報告。快取在 `.cache/timeline/`（不進版控），`--offline` 只用快取 |
 | `apply_audio.py` | 把 `audio.tsv` 編譯進 docs/data（每個日段的 `audio` 片段清單，格式見檔頭） |
 | `audio.tsv` | 35177 筆「座標 → 秒數」，進版控。平常重建只需要它 |
+| `align_audio.py` | 用語音辨識（faster-whisper）補 audio.tsv 的洞 → `audio_asr.tsv`。`--check N` 挖洞自我驗證準度 |
+| `audio_asr.tsv` | 補上的時間，多一欄 match（對上的字數比例）。進版控，apply 時與 audio.tsv 合併 |
 
 ```bash
 python3 build_audio.py --offline   # 有快取時；沒有就拿掉 --offline（第一次約 13 分鐘）
+python3 align_audio.py             # 只在 audio.tsv 變了才需要重跑（約 15 分鐘，CPU）
 python3 apply_audio.py             # 可重複執行
 ```
+align_audio.py 需要 ffmpeg 與 `pip install faster-whisper opencc-python-reimplemented`
+（另開 venv；模型第一次會從 huggingface 下載）。它自己用 ffmpeg 解碼成 numpy
+餵給模型，不走 faster-whisper 內建的 PyAV —— 新版 PyAV 的 API 對不上會直接炸。
 音檔不在本站：前端直接串流 `plan.bible365.today/plan/mp3/bible/{卷號}/{章}-{英文卷名}.mp3`。
 
 ### 建置（源頭重建，需要 `../cloud-food/verses`）
@@ -146,8 +152,10 @@ python3 apply_outline.py  # outline.tsv → docs/data，可重複執行
 
 18. **來源時間軸有對齊失敗的節**，例如箴14:1 被標在 126 秒、疊在 14:16 上，
     14:2～15 全缺。留著會讓「從14:1 開始」的片段晚兩分鐘才開口，所以
-    `misaligned()` 丟掉這類節；片段起訖那一節沒時間時，用前一節的結束／
-    後一節的開始推估（寧可多唸半句）。申24、多3 整章沒時間軸，整章播、不高亮。
+    `misaligned()` 丟掉這類節。這些洞（連同條數對不上的綱目、整章沒時間軸
+    的申24 與多3）由 `align_audio.py` 用語音辨識補：只辨識洞前後兩個錨點之間
+    那一小段，跟經文逐字比對取時間，對上的字不到四成就不收。補不上的才退回
+    「片段起訖用前後節推估、中間不亮」。
 
 19. **換日時要不要接著播只看 `ap.want`**。自動下一天、手動按下一天、耳機
     「下一首」都走 `next()` → `render()` → `audioOnRender()`。換檔、換日時

@@ -11,8 +11,9 @@ apply_audio.py — 把 audio.tsv 編譯進 docs/data
                                      種類 1 = 綱目：序 = 這一節的第幾條綱目
                                      種類 2 = 章標題「第 N 章」
 
-一章一個音檔，所以日段跨幾章就有幾個片段。網站沒有時間軸的章（多3）只能整章
-播，不帶提示（"s": 0, "e": null）。
+一章一個音檔，所以日段跨幾章就有幾個片段。提示來自 audio.tsv（來源時間軸）
+加上 audio_asr.tsv（align_audio.py 用語音辨識補的洞）。兩份都沒有時間的章
+只能整章播，不帶提示（"s": 0, "e": null）。
 
 跑：  python apply_audio.py      （可重複執行）
 """
@@ -26,6 +27,7 @@ from build_audio import ORDER
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "docs" / "data"
 TSV = ROOT / "audio.tsv"
+ASR = ROOT / "audio_asr.tsv"
 
 ENGLISH = ["Genesis", "Exodus", "Leviticus", "Numbers", "Deuteronomy", "Joshua", "Judges",
            "Ruth", "1 Samuel", "2 Samuel", "1 Kings", "2 Kings", "1 Chronicles",
@@ -45,11 +47,18 @@ def audio_file(ab, ch):
     return f"{bk:02d}/{ch:0{3 if ab == '詩' else 2}d}-{urllib.parse.quote(ENGLISH[bk - 1])}"
 
 
-def load_tsv():
-    """{(簡稱, 章): [(起, 迄, 節, 種類, 序)]}"""
+def load_tsv(include_asr=True):
+    """{(簡稱, 章): [(起, 迄, 節, 種類, 序)]}
+
+    audio.tsv 是來源的時間軸；audio_asr.tsv 是 align_audio.py 用語音辨識補的洞，
+    兩份的單位不重疊，直接合併。
+    """
     out = collections.defaultdict(list)
-    for line in TSV.read_text(encoding="utf-8").splitlines()[1:]:
-        ref, kind, idx, s, e = line.split("\t")
+    lines = TSV.read_text(encoding="utf-8").splitlines()[1:]
+    if include_asr and ASR.exists():
+        lines += ASR.read_text(encoding="utf-8").splitlines()[1:]
+    for line in lines:
+        ref, kind, idx, s, e = line.split("\t")[:5]
         ref, v = ref.rsplit(":", 1)
         i = 0
         while not ref[i].isdigit():
