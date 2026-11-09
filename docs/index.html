@@ -27,6 +27,15 @@
   </div>
 </main>
 
+<!-- ── 朗讀 ──────────────────────────────────────────────── -->
+<div id="player" hidden>
+  <button id="pl-play" class="pl-play" aria-label="播放朗讀">▶</button>
+  <input id="pl-seek" type="range" min="0" max="1000" value="0" aria-label="朗讀進度">
+  <span id="pl-time" class="pl-time">0:00 / 0:00</span>
+  <button id="pl-rate" class="pl-chip" aria-label="朗讀速度">1×</button>
+  <button id="pl-auto" class="pl-chip" aria-pressed="false" title="整天讀完自動播下一天">自動下一天</button>
+</div>
+
 <footer id="foot">
   <button id="btn-prev" class="nav-btn" aria-label="前一天">‹ 前一天</button>
   <button id="btn-read" class="read-btn" aria-label="標記讀完"></button>

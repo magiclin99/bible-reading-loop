@@ -10,3 +10,6 @@ audit/packets/
 
 # Firebase 模擬器的記錄檔
 *-debug.log
+
+# build_audio.py 抓下來的時間軸快取（可重抓）
+.cache/

@@ -10,6 +10,7 @@
   都是 build 工具或記錄，不會被運行中的網站載入。
 - 核心資料流：`refs.py`（解析器）→ `links.tsv`（可稽核清單）→ `docs/data`（編譯產物）→ `docs/app.js`（前端渲染）。
 - 綱目是另一條平行的管線：恢復本資料庫 → `outline.tsv` → `docs/data`，與連結互不影響。
+- 朗讀也是：網上聖經恢復本的時間軸 → `audio.tsv` → `docs/data`。
 
 ## 檔案地圖
 
@@ -41,6 +42,25 @@
 資料庫是 `../cloud-food/db/bible.sqlite`（Git LFS；沒 pull 時只是 133 bytes 的
 指標檔），同一個檔也在 `../bible-mcp/Bible20240820.sqlite`。綱目在
 `outline_all_big5_05` 表，欄位名會誤導，對照寫在 `build_outline.py` 檔頭。
+
+### 朗讀管線
+| 檔案 | 作用 |
+|---|---|
+| `build_audio.py` | 抓網上聖經恢復本的逐章時間軸 → `audio.tsv` + 報告。快取在 `.cache/timeline/`（不進版控），`--offline` 只用快取 |
+| `apply_audio.py` | 把 `audio.tsv` 編譯進 docs/data（每個日段的 `audio` 片段清單，格式見檔頭） |
+| `audio.tsv` | 35177 筆「座標 → 秒數」，進版控。平常重建只需要它 |
+| `align_audio.py` | 用語音辨識（faster-whisper）補 audio.tsv 的洞 → `audio_asr.tsv`。`--check N` 挖洞自我驗證準度 |
+| `audio_asr.tsv` | 補上的時間，多一欄 match（對上的字數比例）。進版控，apply 時與 audio.tsv 合併 |
+
+```bash
+python3 build_audio.py --offline   # 有快取時；沒有就拿掉 --offline（第一次約 13 分鐘）
+python3 align_audio.py             # 只在 audio.tsv 變了才需要重跑（約 15 分鐘，CPU）
+python3 apply_audio.py             # 可重複執行
+```
+align_audio.py 需要 ffmpeg 與 `pip install faster-whisper opencc-python-reimplemented`
+（另開 venv；模型第一次會從 huggingface 下載）。它自己用 ffmpeg 解碼成 numpy
+餵給模型，不走 faster-whisper 內建的 PyAV —— 新版 PyAV 的 API 對不上會直接炸。
+音檔不在本站：前端直接串流 `plan.bible365.today/plan/mp3/bible/{卷號}/{章}-{英文卷名}.mp3`。
 
 ### 建置（源頭重建，需要 `../cloud-food/verses`）
 - `build_site_data.py` — 計畫 + 經文源 → docs/data
@@ -125,6 +145,31 @@ python3 apply_outline.py  # outline.tsv → docs/data，可重複執行
     `blr:onetap`，之後不再跳。它的浮層是瀏覽器畫的（FedCM），不在 DOM 裡，
     自動化截圖看不到，只能人眼驗。
 
+17. **時間軸的 selector 綁的是對方的 DOM，要換成座標才收**（同第 1 點）。
+    `#verse-V-K` 是被綱目切開的第 K 塊，`#outline-V-P-J` 依 (P,J) 排序後
+    就是我們那一節的第幾條綱目。綱目條數對不上的節（撒下、王上一帶，對方
+    沒做綱目時間）就不收那幾條，不硬配。
+
+18. **來源時間軸有對齊失敗的節**，例如箴14:1 被標在 126 秒、疊在 14:16 上，
+    14:2～15 全缺。留著會讓「從14:1 開始」的片段晚兩分鐘才開口，所以
+    `misaligned()` 丟掉這類節。這些洞（連同條數對不上的綱目、整章沒時間軸
+    的申24 與多3）由 `align_audio.py` 用語音辨識補：只辨識洞前後兩個錨點之間
+    那一小段，跟經文逐字比對取時間，對上的字不到四成就不收。補不上的才退回
+    「片段起訖用前後節推估、中間不亮」。
+    - **洞旁的錨點本身常是錯的**（撒上1:1 標在其實唸 1:3 的地方），所以錨點
+      也一起比對，對不上就往外擴，並以辨識結果改正（apply 時 asr 優先）。
+    - **單字的零星匹配要丟**，否則短綱目會被東湊西湊拉成 20 秒；另有
+      `plausible()` 擋「唸 n 字花太久」。
+    - 實測（`--check 8`）：經文起點誤差中位數 0.3 秒、九成在 1.5 秒內。剩下的
+      大誤差是**來源標錯**（太19:16、徒17:19 的綱目，辨識顯示實際早 8 秒）。
+    - 現況：補上 278、改正錨點 40；仍不亮 12 節（詩118:1-4、詩136:2-3 等句子
+      重複的經文，比對易混淆，寧缺勿錯），其餘對不上的是音檔沒唸的綱目。
+
+19. **換日時要不要接著播只看 `ap.want`**。自動下一天、手動按下一天、耳機
+    「下一首」都走 `next()` → `render()` → `audioOnRender()`。換檔、換日時
+    自己呼叫的 `pause()` 也會觸發 `pause` 事件，用 `ap.holdUntil` 擋掉，不然會被
+    當成使用者按了暫停。
+
 ## 驗證真的動起來
 
 改完務必實跑，不能只看程式碼：
@@ -140,3 +185,7 @@ python3 apply_outline.py  # outline.tsv → docs/data，可重複執行
   改完程式要強制重新整理
 - 綱目：舊約第 1 天（創1:2 應切成「2」「2下」兩塊）、右上「收合」後只剩綱目、
   點單條綱目只收它底下的經文
+- 朗讀：舊約第 1 天按播放，「壹 神的創造」綱目先亮；右鍵創1:5 應從該節唸起；
+  第 2 天唸到創1:31 後應換到第 2 章音檔；開「自動下一天」拖到結尾，應跳到下
+  一天並繼續播。Playwright 要給 `proxy: { server: HTTPS_PROXY, bypass: 'localhost' }`
+  和 `--autoplay-policy=no-user-gesture-required`
