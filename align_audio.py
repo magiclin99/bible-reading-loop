@@ -185,6 +185,8 @@ def align(units, chars):
     sm = difflib.SequenceMatcher(None, "".join(tgt), rec, autojunk=False)
     hit = collections.defaultdict(list)          # 單位 -> [(起, 迄)]
     for a, b, size in sm.get_matching_blocks():
+        if size < 2:                             # 單字的零星巧合不算（綱目短，最容易被湊上）
+            continue
         for k in range(size):
             hit[owner[a + k]].append(chars[b + k][1:])
     out = []
@@ -193,8 +195,16 @@ def align(units, chars):
         h = hit.get(i, [])
         ratio = len(h) / n_chars[i] if n_chars[i] else 0
         if len(h) >= 2 and ratio >= MIN_MATCH:
-            out.append((u, min(x[0] for x in h), max(x[1] for x in h), ratio))
+            a, b = min(x[0] for x in h), max(x[1] for x in h)
+            if plausible(n_chars[i], a, b):
+                out.append((u, a, b, ratio))
     return out
+
+
+def plausible(n, a, b):
+    """唸 n 個字花的時間合不合理。朗讀約每秒 4～5 字；比對若東湊一個字、
+    西湊一個字，跨度會長得離譜（實測有綱目被拉到 20 秒）。"""
+    return b - a <= n * 0.45 + 2
 
 
 def fill(model, ab, ch, units, t, run):
@@ -299,6 +309,17 @@ def main():
     # 每章做完就記進 PROGRESS 並重寫 OUT：跑一次要半小時以上，中途斷了不必重來。
     # 不帶章名重跑會跳過做過的章；--fresh 全部重做；帶章名就只重做那幾章。
     done = {} if args.fresh or not PROGRESS.exists() else json.loads(PROGRESS.read_text())
+    # 舊進度也套用目前的合理性檢查（規則改嚴之後不必整輪重跑）
+    chs = chapters()
+    for tag, lines in done.items():
+        ab = re.match(r"\D+", tag).group()
+        size = {(f"{ab}{int(tag[len(ab):])}:{u[1]}", u[0], str(u[2])): len(clean(u[3]))
+                for u in chs[(ab, int(tag[len(ab):]))]}
+        for k in list(lines):
+            a, b, _ = map(float, lines[k].split("\t"))
+            if not plausible(size[tuple(k.split("\t"))], a, b):
+                print(f"剔除不合理的舊結果 {k.replace(chr(9), ' ')} {a:.1f}-{b:.1f}", file=sys.stderr)
+                del lines[k]
     rep = collections.Counter()
     for (ab, ch), units in chapters().items():
         tag = f"{ab}{ch}"
