@@ -51,19 +51,29 @@ def load_tsv(include_asr=True):
     """{(簡稱, 章): [(起, 迄, 節, 種類, 序)]}
 
     audio.tsv 是來源的時間軸；audio_asr.tsv 是 align_audio.py 用語音辨識補的洞，
-    兩份的單位不重疊，直接合併。
+    以及它驗出來是錯的錨點。同一個單位兩份都有時，以辨識的為準（經文以整節
+    為單位取代，因為兩邊切塊的方式可能不同）。
     """
+    def rows(path):
+        for line in path.read_text(encoding="utf-8").splitlines()[1:]:
+            ref, kind, idx, s, e = line.split("\t")[:5]
+            ref, v = ref.rsplit(":", 1)
+            i = 0
+            while not ref[i].isdigit():
+                i += 1
+            yield (ref[:i], int(ref[i:])), (float(s), float(e), int(v), KIND[kind], int(idx))
+
     out = collections.defaultdict(list)
-    lines = TSV.read_text(encoding="utf-8").splitlines()[1:]
+    for k, c in rows(TSV):
+        out[k].append(c)
     if include_asr and ASR.exists():
-        lines += ASR.read_text(encoding="utf-8").splitlines()[1:]
-    for line in lines:
-        ref, kind, idx, s, e = line.split("\t")[:5]
-        ref, v = ref.rsplit(":", 1)
-        i = 0
-        while not ref[i].isdigit():
-            i += 1
-        out[(ref[:i], int(ref[i:]))].append((float(s), float(e), int(v), KIND[kind], int(idx)))
+        asr = collections.defaultdict(list)
+        for k, c in rows(ASR):
+            asr[k].append(c)
+        for k, new in asr.items():
+            gone = {(c[2], c[3]) if c[3] == 0 else (c[2], c[3], c[4]) for c in new}
+            out[k] = [c for c in out[k]
+                      if ((c[2], c[3]) if c[3] == 0 else (c[2], c[3], c[4])) not in gone] + new
     return out
 
 

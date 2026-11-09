@@ -119,19 +119,19 @@ def verse_timed(t, kind, n, idx):
 
 
 def gaps(units, t):
-    """[(前一錨點結束, 下一錨點開始, [沒時間的單位])]"""
-    out, run, prev_end = [], [], 0.0
+    """[(前一錨點, 後一錨點, [沒時間的單位])]，錨點 = (單位, 起, 迄) 或 None（章首／檔尾）"""
+    out, run, prev = [], [], None
     for u in units:
         hit = verse_timed(t, *u[:3])
         if hit:
             if run:
-                out.append((prev_end, hit[0], run))
+                out.append((prev, (u, *hit), run))
                 run = []
-            prev_end = max(prev_end, hit[1])
+            prev = (u, *hit)
         else:
             run.append(u)
     if run:
-        out.append((prev_end, None, run))
+        out.append((prev, None, run))
     return out
 
 
@@ -194,6 +194,51 @@ def align(units, chars):
     return out
 
 
+def fill(model, ab, ch, units, t, run):
+    """補一個洞，回傳 ([(單位, 起, 迄, 比例)], 被改正的錨點)。
+
+    洞旁邊的錨點本身也常常不準（例如撒上1:1 被標在其實唸 1:3 的地方），
+    只夾「前一錨點結束～後一錨點開始」會夾出唸不完一節、甚至根本不含洞的
+    空檔。所以：
+      1. 辨識範圍包含前後錨點整段，比對時把錨點經文也放進去當上下文。
+      2. 錨點自己的字對不上 = 錨點時間是錯的：把它也算進洞裡，往外擴到再
+         前／後一個錨點重試（最多 3 次）。擴進來的錨點若對上了，就用辨識
+         的時間取代來源的。
+    """
+    def anchor(i, step):
+        while 0 <= i < len(units):
+            hit = verse_timed(t, *units[i][:3])
+            if hit:
+                return i, hit
+            i += step
+        return None, None
+
+    lo, hi = units.index(run[0]), units.index(run[-1])
+    for _ in range(4):
+        pi, ph = anchor(lo - 1, -1)
+        ni, nh = anchor(hi + 1, +1)
+        s = ph[0] if ph else 0.0
+        e = nh[1] if nh else None
+        ctx = units[(pi if pi is not None else lo):(ni + 1 if ni is not None else len(units))]
+        want = "".join(clean(u[3]) for u in ctx)
+        chars = transcribe(model, mp3(ab, ch), s, e, want)
+        if len(chars) < 0.5 * len(want):
+            # 模型偶爾整段漏聽（撒下2 只吐出「第二章」），不帶提示再聽一次
+            chars = max(chars, transcribe(model, mp3(ab, ch), s, e, ""), key=len)
+        got = {g[0]: g for g in align(ctx, chars)}
+        bad_prev = pi is not None and units[pi] not in got
+        bad_next = ni is not None and units[ni] not in got
+        if not (bad_prev or bad_next):
+            break
+        if bad_prev:
+            lo = pi
+        if bad_next:
+            hi = ni
+    inside = units[lo:hi + 1]
+    fixed = [u for u in inside if u not in run]
+    return [got[u] for u in inside if u in got], fixed
+
+
 def check(model, cues, n):
     """挖洞再補：誤差 = 補出來的起點 − 來源的起點"""
     import random
@@ -208,10 +253,9 @@ def check(model, cues, n):
         vs = [i for i, u in enumerate(units) if u[0] == "v"]
         i0 = rnd.randrange(1, len(vs) - 8)
         run = [units[i] for i in range(vs[i0], vs[i0 + 6])]       # 挖掉約 6 節
-        s = verse_timed(t, *units[vs[i0] - 1][:3])[1]        # 這些章沒有洞，前一單位必有時間
-        e = verse_timed(t, *units[vs[i0 + 6]][:3])[0]
-        got = {g[0]: g for g in align(run, transcribe(model, mp3(ab, ch), s, e,
-                                                      "".join(clean(u[3]) for u in run)))}
+        tt = {k: x for k, x in t.items()
+              if not any(k[0] == u[0] and k[1] == u[1] for u in run)}   # 把這段挖掉
+        got = {g[0]: g for g in fill(model, ab, ch, units, tt, run)[0]}
         for u in run:
             if u not in got:
                 lost += 1
@@ -256,21 +300,22 @@ def main():
         tag = f"{ab}{ch}"
         if args.only and tag not in args.only:
             continue
-        for s, e, run in gaps(units, timed(cues.get((ab, ch), []))):
-            if e is not None and e - s < 0.8:
-                rep["空檔太短（沒唸）"] += len(run)   # 多半是來源沒唸的綱目
-                continue
-            want = "".join(clean(u[3]) for u in run)
-            chars = transcribe(model, mp3(ab, ch), s, e, want)
-            got = align(run, chars)
+        t = timed(cues.get((ab, ch), []))
+        for _, _, run in gaps(units, t):
+            got, fixed = fill(model, ab, ch, units, t, run)
             for u, a, b, r in got:
                 ref = f"{ab}{ch}:{u[1]}"
                 rows[(ref, u[0], str(u[2]))] = f"{ref}\t{u[0]}\t{u[2]}\t{a:.2f}\t{b:.2f}\t{r:.2f}"
-            rep["補上"] += len(got)
-            rep["對不上"] += len(run) - len(got)
-            miss = [f"{u[0]}{u[1]}.{u[2]}" for u in run if u not in {g[0] for g in got}]
-            print(f"{tag} {s:.1f}-{'' if e is None else f'{e:.1f}'}：{len(run)} 個單位，補上 {len(got)}"
-                  + (f"，對不上 {' '.join(miss)}" if miss else ""), file=sys.stderr)
+            ok = {g[0] for g in got}
+            name = lambda u: f"{u[1]}{'' if u[0] == 'v' else u[0]}{'.' + str(u[2]) if u[0] != 'v' or u[2] else ''}"
+            miss = [name(u) for u in run if u not in ok]
+            fix = [name(u) for u in fixed if u in ok]
+            rep["補上"] += len(run) - len(miss)
+            rep["對不上"] += len(miss)
+            rep["改正錨點"] += len(fix)
+            print(f"{tag}：洞 {len(run)} 個，補上 {len(run) - len(miss)}"
+                  + (f"，改正錨點 {' '.join(fix)}" if fix else "")
+                  + (f"，對不上 {' '.join(miss)}" if miss else ""), file=sys.stderr, flush=True)
 
     def order(k):
         ref, kind, idx = k
