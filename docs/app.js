@@ -188,6 +188,7 @@ async function render(slideDir) {
 
   saveState();
   prefetch(orig);
+  audioOnRender(day, track);
 }
 
 // overall accumulation strip under the top bar
@@ -229,7 +230,7 @@ function buildDayHTML(day, track) {
   let sec = -1, nSec = 0, bodyOpen = false;
   const openBody  = () => { if (!bodyOpen) { h += `<div class="ol-body" data-sec="${sec}">`; bodyOpen = true; } };
   const closeBody = () => { if (bodyOpen) { h += `</div>`; bodyOpen = false; } };
-  const heading = (lv, text, carry) => { closeBody(); sec = nSec++; h += outlineHTML(sec, lv, text, carry); };
+  const heading = (lv, text, carry, at) => { closeBody(); sec = nSec++; h += outlineHTML(sec, lv, text, carry, at); };
   for (const vs of t.verses) {
     if (vs.book !== curBook) {           // book change within a day (cross-book)
       curBook = vs.book; curCh = null;
@@ -242,7 +243,7 @@ function buildDayHTML(day, track) {
       curCh = vs.ch;
       const unit = vs.abbr === '詩' ? '篇' : '章';
       closeBody();
-      h += `<div class="ch-mark" style="font-weight:700;color:var(--ink-soft);margin:16px 0 4px;font-size:14px">第 ${curCh} ${unit}</div>`;
+      h += `<div class="ch-mark" data-bk="${escapeHTML(vs.book)}" data-ch="${curCh}" style=""font-weight:700;color:var(--ink-soft);margin:16px 0 4px;font-size:14px">第 ${curCh} ${unit}</div>`;
     }
     for (const [lv, text] of vs.carry || []) heading(lv, text, true);
 
@@ -258,10 +259,11 @@ function buildDayHTML(day, track) {
          + `<span class="vn">${vs.v}${part ? '下' : ''}</span><span class="vtext">${escapeHTML(vs.text.slice(pos, end))}</span></p>`;
       pos = end; part++;
     };
-    for (const [at, lv, text] of vs.outline || []) {
+    // 綱目帶著它屬於哪一節的第幾條，朗讀到它時才找得到（見 audioTargets）
+    (vs.outline || []).forEach(([at, lv, text], i) => {
       if (at > pos) chunk(at);
-      heading(lv, text, false);
-    }
+      heading(lv, text, false, `data-bk="${escapeHTML(vs.book)}" data-ch="${vs.ch}" data-v="${vs.v}" data-i="${i}"`);
+    });
     chunk(vs.text.length);
     // 展開狀態存在 openNotes 而非只在 DOM，否則任何一次 render（例如按
     // 「標記讀完」）都會把使用者展開的註解全部清空。
@@ -272,14 +274,14 @@ function buildDayHTML(day, track) {
 }
 
 // ── 綱目 ─────────────────────────────────────────────────────
-function outlineHTML(sec, lv, text, carry) {
+function outlineHTML(sec, lv, text, carry, at) {
   // 「壹　神的創造　一1～二25」以全形空白分段；末段帶數字的是經節範圍
   const parts = text.split('\u3000');
   const range = parts.length >= 3 && /[0-9０-９]/.test(parts[parts.length - 1]) ? parts.pop() : '';
   let title = parts.join('\u3000');
   // 承接自前幾天的綱目：沿用紙本「（續）」的標法
   if (carry && !title.includes('續')) title += '（續）';
-  return `<button type="button" class="ol ol-l${lv}${carry ? ' carry' : ''}" data-sec="${sec}" data-lv="${lv}">`
+  return `<button type="button" class="ol ol-l${lv}${carry ? ' carry' : ''}" data-sec="${sec}" data-lv="${lv}"${at ? ' ' + at : ''}>`
        + `<span class="ol-tw" aria-hidden="true"></span>`
        + `<span class="ol-t">${escapeHTML(title)}${range ? `<span class="ol-r">${escapeHTML(range)}</span>` : ''}</span>`
        + `</button>`;
@@ -409,6 +411,7 @@ function flashTo(book, ch, v, label) {
 // ── Verse note expand (event delegation) ─────────────────────
 page.addEventListener('click', (e) => {
   if (e.target.closest('a.ref')) return;      // 引用連結自己開新分頁
+  if (Date.now() - pressedAt < 600) return;   // 剛長按「從這節播放」，別再展開註解
   const ol = e.target.closest('.ol');
   if (ol) { toggleFold(+ol.dataset.sec); return; }
   const v = e.target.closest('.verse');
@@ -481,6 +484,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') prev();
   else if (e.key === 't' || e.key === 'T') toggleTrack();
   else if (e.key === 'o' || e.key === 'O') toggleFoldAll();
+  else if (e.key === 'p' || e.key === 'P') togglePlay();
 });
 
 // ── Scroll persistence (throttled) ───────────────────────────
@@ -821,6 +825,294 @@ function offerOneTap() {
     google.accounts.id.prompt((n) => { if (n.isSkippedMoment()) oneTapOff(); });
   };
   document.head.appendChild(s);
+}
+
+// ── 朗讀音檔 ─────────────────────────────────────────────────
+// 音檔與時間軸來自網上聖經恢復本（recoveryversion.twgbr.org），一章一個 mp3。
+// 每個日段的 audio 是依序要播的片段（日段跨幾章就幾段），各帶 [起, 迄, 節,
+// 種類, 序] 的提示，由 apply_audio.py 編進 docs/data，格式見該檔檔頭。
+// 播放中每 100ms 用 currentTime 找提示、替經文/綱目/章標題加 .speaking。
+//
+// 偏好（自動下一天、語速）存在自己的 key，不放 state：它們不是閱讀位置，
+// 查考分頁改了也無妨，也不必跨裝置同步。
+const AUDIO_BASE = 'https://plan.bible365.today/plan/mp3/bible/';
+const LS_AUTONEXT = 'blr:autonext';
+const LS_RATE = 'blr:rate';
+const LEAD = 0.18;                 // 提示比實際發音略早，晚一點才換高亮
+const RATES = [1, 1.25, 1.5, 2, 0.75];
+const audio = new Audio();
+audio.preload = 'none';
+const ap = {
+  key: null,                       // `${day}-${track}`：目前載的是哪一個日段
+  clips: [], i: 0, src: '',
+  want: false,                     // 使用者要它播（換日時據此決定要不要接著播）
+  sig: '', els: [],                // 目前高亮的提示與元素
+  timer: null,
+  holdUntil: 0,                    // 換檔、換日時自己發的 pause 不算使用者暫停
+};
+let autoNext = lsGet(LS_AUTONEXT) === '1';
+let rate = +lsGet(LS_RATE) || 1;
+let manualScrollAt = 0;            // 使用者自己捲過頁面 -> 暫停跟讀捲動
+let pressedAt = 0;                 // 長按「從這節播放」的時間，用來吃掉隨後的 click
+
+function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+const clipEnd = (c) => c.e != null ? c.e : (c === ap.clips[ap.i] && audio.duration) || c.s;
+const clipLen = (c) => Math.max(0, clipEnd(c) - c.s);
+const dayLen = () => ap.clips.reduce((n, c) => n + clipLen(c), 0);
+function dayPos() {
+  let n = 0;
+  for (let j = 0; j < ap.i; j++) n += clipLen(ap.clips[j]);
+  const c = ap.clips[ap.i];
+  return c ? n + Math.max(0, Math.min(audio.currentTime, clipEnd(c)) - c.s) : 0;
+}
+
+// render() 的尾巴：換了日段就換片段；使用者原本在聽，就接著播新的這一天
+function audioOnRender(day, track) {
+  const t = day[track];
+  const key = `${day.day}-${track}`;
+  el('player').hidden = !(t && t.audio && t.audio.length);
+  if (key !== ap.key) {
+    const keep = ap.want;
+    stopAudio();
+    ap.key = key;
+    ap.clips = (t && t.audio) || [];
+    if (keep && ap.clips.length) playClip(0);
+  }
+  ap.sig = '';                     // render 重建了 DOM，高亮要重新套上
+  if (ap.src) highlight(true);
+  updatePlayer();
+}
+
+function stopAudio() {
+  audio.pause();
+  ap.want = false; ap.i = 0; ap.src = '';
+  audio.removeAttribute('src'); audio.load();
+  clearHighlight();
+  stopTick();
+}
+
+// 從第 i 段的 at 秒開始播。換檔時用 #t= 讓瀏覽器直接從那裡開始抓，
+// play() 也必須在點擊的同一拍呼叫（iOS），所以不等 loadedmetadata。
+function playClip(i, at) {
+  const c = ap.clips[i];
+  if (!c) return;
+  ap.i = i; ap.want = true;
+  const start = at != null ? at : c.s;
+  const src = AUDIO_BASE + c.f + '.mp3';
+  if (src !== ap.src) {
+    ap.src = src;
+    ap.holdUntil = Date.now() + 1500;
+    clearHighlight();              // 換章了，上一章最後一節別一直亮著
+    audio.src = src + (start > 0 ? `#t=${start}` : '');
+    audio.addEventListener('loadedmetadata', () => {
+      if (Math.abs(audio.currentTime - start) > 0.5) audio.currentTime = start;
+    }, { once: true });
+  } else {
+    audio.currentTime = start;
+  }
+  audio.defaultPlaybackRate = audio.playbackRate = rate;
+  const p = audio.play();
+  if (p) p.catch((e) => { if (e.name !== 'AbortError') { ap.want = false; updatePlayer(); } });
+  ap.sig = '';
+  setMediaMeta();
+  updatePlayer();
+}
+
+function togglePlay() {
+  if (!ap.clips.length) return;
+  if (!audio.paused) { ap.want = false; audio.pause(); return; }
+  if (!ap.src) { playClip(0); return; }
+  ap.want = true;
+  audio.play().catch(() => { ap.want = false; updatePlayer(); });
+}
+
+// 一段播完：下一段；整天播完：自動下一天或停下
+function advance() {
+  if (ap.i + 1 < ap.clips.length) { playClip(ap.i + 1); return; }
+  if (autoNext) {
+    // ap.want 仍為 true，render 換到下一天時 audioOnRender 會接著播
+    ap.holdUntil = Date.now() + 1500;
+    audio.pause();
+    next();
+    toast(`自動播放下一天：第 ${userDayOf(state.currentDay)} 天`);
+  } else {
+    stopAudio();
+    updatePlayer();
+  }
+}
+
+function tick() {
+  const c = ap.clips[ap.i];
+  if (!c || !ap.src) return;
+  if (!audio.paused && audio.currentTime >= clipEnd(c) - 0.05 && audio.readyState >= 2) {
+    advance();
+    return;
+  }
+  highlight();
+  updateTime();
+}
+function startTick() { if (!ap.timer) ap.timer = setInterval(tick, 100); }
+function stopTick() { clearInterval(ap.timer); ap.timer = null; }
+
+// ── 高亮 ──
+// 提示對到頁面上的元素。一節可能被綱目切成兩塊（地雷 10），序 K 就是第 K 塊。
+function audioTargets(c, [, , v, kind, idx]) {
+  const bk = CSS.escape(c.bk);
+  if (kind === 0) {
+    const els = verseEls(c.bk, c.ch, v);
+    return idx && els[idx - 1] ? [els[idx - 1]] : els;
+  }
+  if (kind === 1) return [...page.querySelectorAll(`.ol[data-bk="${bk}"][data-ch="${c.ch}"][data-v="${v}"][data-i="${idx}"]`)];
+  return [...page.querySelectorAll(`.ch-mark[data-bk="${bk}"][data-ch="${c.ch}"]`)];
+}
+function highlight(force) {
+  const c = ap.clips[ap.i];
+  if (!c || !c.c.length) return;
+  const t = Math.max(0, audio.currentTime - LEAD);
+  const hit = c.c.filter(x => x[0] <= t && t < x[1]);
+  if (!hit.length) return;         // 句與句之間的空檔：留著上一個高亮
+  const sig = ap.i + '|' + hit.map(x => x.join(',')).join('|');
+  if (sig === ap.sig && !force) return;
+  ap.sig = sig;
+  const els = new Set(hit.flatMap(x => audioTargets(c, x)));
+  ap.els.forEach(x => { if (!els.has(x)) x.classList.remove('speaking'); });
+  els.forEach(x => x.classList.add('speaking'));
+  ap.els = [...els];
+  follow(ap.els.find(x => x.offsetParent));
+}
+function clearHighlight() {
+  ap.els.forEach(x => x.classList.remove('speaking'));
+  ap.els = []; ap.sig = '';
+}
+// 跟讀：唸到的地方捲出畫面就捲回來；使用者自己捲過就先不搶，6 秒後再跟
+function follow(x) {
+  if (!x || audio.paused || Date.now() - manualScrollAt < 6000) return;
+  const r = x.getBoundingClientRect(), v = pager.getBoundingClientRect();
+  if (r.top >= v.top + 40 && r.bottom <= v.bottom - 40) return;
+  x.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+['wheel', 'touchmove'].forEach(ev =>
+  pager.addEventListener(ev, () => { manualScrollAt = Date.now(); }, { passive: true }));
+
+// ── 從這節播放（右鍵 / 長按經節）──
+function playFromVerse(v) {
+  const bk = v.dataset.bk, ch = +v.dataset.ch, n = +v.dataset.v;
+  const i = ap.clips.findIndex(c => c.bk === bk && c.ch === ch);
+  const c = ap.clips[i];
+  const hits = c ? c.c.filter(x => x[2] === n && x[3] === 0) : [];
+  if (!hits.length) { toast('這一節沒有對應的朗讀時間'); return; }
+  manualScrollAt = 0;
+  playClip(i, Math.min(...hits.map(x => x[0])));
+  toast(`▶ 從 ${ch}:${n} 開始朗讀`);
+}
+page.addEventListener('contextmenu', (e) => {
+  const v = e.target.closest('.verse');
+  if (!v || !ap.clips.length || e.target.closest('a.ref')) return;
+  e.preventDefault();
+  pressedAt = Date.now();
+  playFromVerse(v);
+});
+// iOS 不對長按發 contextmenu，自己計時
+let pressTimer = null, pressXY = null;
+page.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch') return;
+  const v = e.target.closest('.verse');
+  if (!v || !ap.clips.length) return;
+  pressXY = [e.clientX, e.clientY];
+  pressTimer = setTimeout(() => { pressTimer = null; pressedAt = Date.now(); playFromVerse(v); }, 550);
+});
+const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+page.addEventListener('pointerup', cancelPress);
+page.addEventListener('pointercancel', cancelPress);
+page.addEventListener('pointermove', (e) => {
+  if (pressTimer && pressXY && Math.hypot(e.clientX - pressXY[0], e.clientY - pressXY[1]) > 10) cancelPress();
+});
+
+// ── 播放列 ──
+const fmt = (s) => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+let seeking = false;
+function updateTime() {
+  const total = dayLen(), pos = dayPos();
+  if (!seeking) el('pl-seek').value = total ? Math.round(pos / total * 1000) : 0;
+  el('pl-time').textContent = `${fmt(pos)} / ${fmt(total)}`;
+}
+function updatePlayer() {
+  const playing = ap.want;
+  const b = el('pl-play');
+  b.textContent = playing ? '❚❚' : '▶';
+  b.setAttribute('aria-label', playing ? '暫停朗讀' : '播放朗讀');
+  b.classList.toggle('on', playing);
+  el('pl-rate').textContent = `${rate}×`;
+  const an = el('pl-auto');
+  an.classList.toggle('on', autoNext);
+  an.setAttribute('aria-pressed', String(autoNext));
+  updateTime();
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = ap.src ? (playing ? 'playing' : 'paused') : 'none';
+}
+function seekDay(pos) {
+  let n = 0;
+  for (let j = 0; j < ap.clips.length; j++) {
+    const len = clipLen(ap.clips[j]);
+    if (pos < n + len || j === ap.clips.length - 1) {
+      manualScrollAt = 0;
+      const was = ap.want || !ap.src;
+      playClip(j, ap.clips[j].s + Math.max(0, pos - n));
+      if (!was) { ap.want = false; audio.pause(); updatePlayer(); }
+      return;
+    }
+    n += len;
+  }
+}
+el('pl-play').onclick = togglePlay;
+el('pl-seek').addEventListener('input', () => { seeking = true; el('pl-time').textContent = `${fmt(el('pl-seek').value / 1000 * dayLen())} / ${fmt(dayLen())}`; });
+el('pl-seek').addEventListener('change', () => { seeking = false; seekDay(el('pl-seek').value / 1000 * dayLen()); });
+el('pl-rate').onclick = () => {
+  rate = RATES[(RATES.indexOf(rate) + 1) % RATES.length];
+  audio.defaultPlaybackRate = audio.playbackRate = rate;
+  lsSet(LS_RATE, String(rate));
+  updatePlayer();
+};
+el('pl-auto').onclick = () => {
+  autoNext = !autoNext;
+  lsSet(LS_AUTONEXT, autoNext ? '1' : '0');
+  updatePlayer();
+  toast(autoNext ? '整天讀完會自動播下一天' : '已關閉自動下一天');
+};
+
+audio.addEventListener('play', () => { ap.want = true; startTick(); updatePlayer(); });
+// 耳機拔掉、系統插播等外來的暫停也要反映在按鈕上
+audio.addEventListener('pause', () => {
+  if (Date.now() < ap.holdUntil) return;
+  ap.want = false;
+  updatePlayer();
+});
+audio.addEventListener('seeked', () => { ap.sig = ''; highlight(true); updateTime(); });
+audio.addEventListener('ended', () => { if (ap.want) advance(); });
+audio.addEventListener('loadedmetadata', updateTime);
+audio.addEventListener('error', () => {
+  if (!ap.src) return;
+  ap.want = false; stopTick(); updatePlayer();
+  toast('朗讀音檔載入失敗，請檢查網路');
+});
+
+// 鎖定畫面、耳機按鍵：上一首/下一首 = 前後一天
+function setMediaMeta() {
+  if (!('mediaSession' in navigator) || !window.MediaMetadata) return;
+  const c = ap.clips[ap.i];
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: `${c.bk} ${c.ch}`,
+    artist: `第 ${userDayOf(state.currentDay)} 天 · ${state.currentTrack === 'nt' ? '新約' : '舊約'}`,
+    album: '一年讀經一遍',
+  });
+}
+if ('mediaSession' in navigator) {
+  const ms = navigator.mediaSession, on = (a, f) => { try { ms.setActionHandler(a, f); } catch {} };
+  on('play', togglePlay);
+  on('pause', togglePlay);
+  on('nexttrack', next);
+  on('previoustrack', prev);
 }
 
 // ── Boot ─────────────────────────────────────────────────────
