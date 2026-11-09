@@ -16,8 +16,10 @@ audio.tsv 來自網上聖經恢復本，但有洞（見 CLAUDE.md 地雷 18）�
 供稽核。apply_audio.py 會把兩份一起編進 docs/data。
 
 需要：ffmpeg、pip install faster-whisper opencc-python-reimplemented
-跑：  python align_audio.py                 # 全部的洞
-      python align_audio.py 箴2 申24        # 只跑這幾章（結果會併進現有的 tsv）
+跑：  python align_audio.py                 # 全部的洞；中斷了再跑會接續（進度在 .cache/）
+      python align_audio.py --fresh         # 不接續，全部重做
+      python align_audio.py 箴2 申24        # 只重做這幾章
+      python align_audio.py --check 8       # 自我驗證準度
       python align_audio.py --model medium  # 預設 small
 """
 import argparse
@@ -36,6 +38,7 @@ from build_audio import ORDER
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "docs" / "data"
 OUT = ROOT / "audio_asr.tsv"
+PROGRESS = ROOT / ".cache" / "align_progress.json"
 MP3 = ROOT / ".cache" / "mp3"
 BASE = "https://plan.bible365.today/plan/mp3/bible/"
 KINDS = "vot"
@@ -217,8 +220,9 @@ def fill(model, ab, ch, units, t, run):
     for _ in range(4):
         pi, ph = anchor(lo - 1, -1)
         ni, nh = anchor(hi + 1, +1)
-        s = ph[0] if ph else 0.0
-        e = nh[1] if nh else None
+        # 錨點可能錯到前後顛倒（撒下12 的前錨點比後錨點還晚），取兩者涵蓋的範圍
+        s = min(ph[0], nh[0]) if ph and nh else ph[0] if ph else 0.0
+        e = max(ph[1], nh[1]) if ph and nh else nh[1] if nh else None
         ctx = units[(pi if pi is not None else lo):(ni + 1 if ni is not None else len(units))]
         want = "".join(clean(u[3]) for u in ctx)
         chars = transcribe(model, mp3(ab, ch), s, e, want)
@@ -278,6 +282,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("only", nargs="*", help="只跑這幾章，如 箴2 申24")
     ap.add_argument("--model", default="small")
+    ap.add_argument("--fresh", action="store_true", help="不接續上次的進度，全部重做")
     ap.add_argument("--check", type=int, metavar="N",
                     help="自我驗證：在 N 個來源時間軸完整的章裡挖掉一段節再補回來，跟原本的時間比")
     args = ap.parse_args()
@@ -291,21 +296,24 @@ def main():
     cues = load_cues(include_asr=False)
     if args.check:
         return check(model, cues, args.check)
-    rows = {}
-    if args.only and OUT.exists():                # 只跑部分章：保留其他章的舊結果
-        for line in OUT.read_text(encoding="utf-8").splitlines()[1:]:
-            rows[tuple(line.split("\t")[:3])] = line
+    # 每章做完就記進 PROGRESS 並重寫 OUT：跑一次要半小時以上，中途斷了不必重來。
+    # 不帶章名重跑會跳過做過的章；--fresh 全部重做；帶章名就只重做那幾章。
+    done = {} if args.fresh or not PROGRESS.exists() else json.loads(PROGRESS.read_text())
     rep = collections.Counter()
     for (ab, ch), units in chapters().items():
         tag = f"{ab}{ch}"
         if args.only and tag not in args.only:
             continue
         t = timed(cues.get((ab, ch), []))
-        for _, _, run in gaps(units, t):
+        holes = gaps(units, t)
+        if not holes or (not args.only and tag in done):
+            continue
+        lines = {}
+        for _, _, run in holes:
             got, fixed = fill(model, ab, ch, units, t, run)
             for u, a, b, r in got:
                 ref = f"{ab}{ch}:{u[1]}"
-                rows[(ref, u[0], str(u[2]))] = f"{ref}\t{u[0]}\t{u[2]}\t{a:.2f}\t{b:.2f}\t{r:.2f}"
+                lines[f"{ref}\t{u[0]}\t{u[2]}"] = f"{a:.2f}\t{b:.2f}\t{r:.2f}"
             ok = {g[0] for g in got}
             name = lambda u: f"{u[1]}{'' if u[0] == 'v' else u[0]}{'.' + str(u[2]) if u[0] != 'v' or u[2] else ''}"
             miss = [name(u) for u in run if u not in ok]
@@ -316,16 +324,24 @@ def main():
             print(f"{tag}：洞 {len(run)} 個，補上 {len(run) - len(miss)}"
                   + (f"，改正錨點 {' '.join(fix)}" if fix else "")
                   + (f"，對不上 {' '.join(miss)}" if miss else ""), file=sys.stderr, flush=True)
+        done[tag] = lines
+        PROGRESS.parent.mkdir(parents=True, exist_ok=True)
+        PROGRESS.write_text(json.dumps(done, ensure_ascii=False))
+        write_out(done)
+    write_out(done)
+    n = sum(len(x) for x in done.values())
+    print(f"寫入 {OUT.name}：{n} 列；本次 " + "、".join(f"{k} {v}" for k, v in rep.items()))
 
-    def order(k):
-        ref, kind, idx = k
+
+def write_out(done):
+    def order(key):
+        ref, kind, idx = key.split("\t")
         ab = re.match(r"\D+", ref).group()
         ch, v = map(int, ref[len(ab):].split(":"))
-        return (ORDER.index(ab), ch, v, kind, int(idx))
+        return (ORDER.index(ab), ch, v, "tov".index(kind), int(idx))
+    rows = {k: v for lines in done.values() for k, v in lines.items()}
     OUT.write_text("ref\tkind\tidx\tstart\tend\tmatch\n"
-                   + "".join(rows[k] + "\n" for k in sorted(rows, key=order)), encoding="utf-8")
-    print(f"寫入 {OUT.name}：{len(rows)} 列；" + "、".join(f"{k} {v}" for k, v in rep.items()))
-
+                   + "".join(f"{k}\t{rows[k]}\n" for k in sorted(rows, key=order)), encoding="utf-8")
 
 if __name__ == "__main__":
     main()
